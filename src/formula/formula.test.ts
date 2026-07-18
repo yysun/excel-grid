@@ -1,11 +1,11 @@
 // Unit tests for the formula engine: tokenizer/parser precedence, evaluator
-// coercions and operators, every built-in function, error values, and
-// reference adjustment for copy/paste/fill.
+// coercions and operators, every built-in function, error values, reference
+// adjustment for copy/paste/fill, and axis remapping for structural edits.
 
 import { describe, expect, it } from "vitest";
 import type { CellRange, CellValue } from "../types";
 import { rangeCoords } from "../utils/cellRef";
-import { adjustFormula, extractRefs } from "./adjust";
+import { adjustFormula, extractRefs, remapFormulaAxis } from "./adjust";
 import { FormulaError } from "./errors";
 import { evaluate, type EvalContext } from "./evaluate";
 import { parse } from "./parser";
@@ -162,6 +162,42 @@ describe("adjustFormula", () => {
     expect(adjustFormula('=CONCATENATE("A1",A1)', 1, 0, 100, 100)).toBe(
       '=CONCATENATE("A1",A2)'
     );
+  });
+});
+
+describe("remapFormulaAxis", () => {
+  const insertAt = (at: number, n: number) => (i: number) => (i < at ? i : i + n);
+  const deleteAt = (start: number, end: number) => (i: number) =>
+    i < start ? i : i <= end ? null : i - (end - start + 1);
+
+  it("shifts references on the row axis, including $-anchored ones", () => {
+    expect(remapFormulaAxis("=A1+B$2", "row", insertAt(0, 1), 100, 100)).toBe(
+      "=A2+B$3"
+    );
+    expect(remapFormulaAxis("=SUM(A1:A3)", "row", insertAt(1, 2), 100, 100)).toBe(
+      "=SUM(A1:A5)"
+    );
+  });
+
+  it("shifts references on the col axis", () => {
+    expect(remapFormulaAxis("=A1+$B1", "col", insertAt(1, 1), 100, 100)).toBe(
+      "=A1+$C1"
+    );
+  });
+
+  it("turns deleted or out-of-bounds references into #REF!", () => {
+    expect(remapFormulaAxis("=A1+A2", "row", deleteAt(0, 0), 100, 100)).toBe(
+      "=#REF!+A1"
+    );
+    expect(remapFormulaAxis("=A1", "row", insertAt(0, 100), 100, 100)).toBe(
+      "=#REF!"
+    );
+  });
+
+  it("leaves strings and function names untouched", () => {
+    expect(
+      remapFormulaAxis('=CONCATENATE("A1",A1)', "row", insertAt(0, 1), 100, 100)
+    ).toBe('=CONCATENATE("A1",A2)');
   });
 });
 

@@ -1,13 +1,17 @@
 // ExcelGrid: the Excel-Web-style spreadsheet component.
 // Features: virtualized cells + sticky-style header strips, formula bar with
-// name box, mouse/keyboard selection (cell, range, row/col, all), Excel-style
-// navigation, in-cell + formula-bar editing, formula recalculation via
-// GridStore, TSV clipboard (native copy/cut/paste events + internal fallback),
-// undo/redo shortcuts, column resize grips, and a fill handle with
-// relative-reference adjustment. A WeCom-style formatting toolbar renders
-// above the formula bar (toolbar prop, default true) and cells render their
-// CellStyle (font flags/size, colors, alignment).
-// Recent changes: added the Toolbar and per-cell style rendering.
+// name box, mouse/keyboard selection (cell, range, row/col via header drag,
+// all), Excel-style navigation (hidden rows/cols skipped), in-cell +
+// formula-bar editing, formula recalculation via GridStore, TSV clipboard
+// (native copy/cut/paste events + internal fallback), undo/redo shortcuts,
+// column resize grips, fill handle with relative-reference adjustment, a
+// WeCom-style formatting toolbar, per-cell CellStyle rendering, right-click
+// context menus (cell / row header / column header) driving insert/delete/
+// move/hide/freeze/sort/filter/clipboard, and frozen panes rendered as
+// transform-synced overlay panes.
+// Recent changes: context-menus story — row metrics replace uniform row
+// math, hidden lines render zero-size, frozen panes + pinned header layers,
+// header drag selection, ContextMenu wiring, shared clipboard helpers.
 
 import {
   forwardRef,
@@ -28,6 +32,7 @@ import type {
   ExcelGridProps,
   HAlign,
 } from "../types";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Toolbar } from "./Toolbar";
 import {
   cellKey,
@@ -38,7 +43,7 @@ import {
   rangeContains,
 } from "../utils/cellRef";
 import { parseTSV, toTSV } from "../utils/tsv";
-import { buildColMetrics, useVirtualRange } from "./useVirtualRange";
+import { buildAxisMetrics, useVirtualRange } from "./useVirtualRange";
 import { useSyncExternalStore } from "react";
 
 const HEADER_HEIGHT = 24;
@@ -61,6 +66,12 @@ interface InternalClipboard {
   tsv: string;
   source: CellRange;
   cut: boolean;
+}
+
+interface MenuState {
+  x: number;
+  y: number;
+  zone: "cell" | "row" | "col";
 }
 
 const clamp = (v: number, lo: number, hi: number): number =>
@@ -109,26 +120,42 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
     const [editor, setEditor] = useState<EditorState | null>(null);
     const [fxDraft, setFxDraft] = useState<string | null>(null);
     const [fillPreview, setFillPreview] = useState<CellRange | null>(null);
+    const [menu, setMenu] = useState<MenuState | null>(null);
     const internalClipboard = useRef<InternalClipboard | null>(null);
     const pasteHandledAt = useRef(0);
     const editorRef = useRef<{ commit: () => void } | null>(null);
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
     const colWidths = useMemo(
-      () => Array.from({ length: cols }, (_, i) => store.getColWidth(i)),
+      () =>
+        Array.from({ length: cols }, (_, i) =>
+          store.isColHidden(i) ? 0 : store.getColWidth(i)
+        ),
       [store, cols, version]
     );
-    const metrics = useMemo(() => buildColMetrics(colWidths), [colWidths]);
-    const totalHeight = rows * rowHeight;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const rowHeights = useMemo(
+      () =>
+        Array.from({ length: rows }, (_, i) =>
+          store.isRowHidden(i) ? 0 : rowHeight
+        ),
+      [store, rows, rowHeight, version]
+    );
+    const colMetrics = useMemo(() => buildAxisMetrics(colWidths), [colWidths]);
+    const rowMetrics = useMemo(() => buildAxisMetrics(rowHeights), [rowHeights]);
+
+    const frozenRows = Math.min(store.getFrozenRows(), rows);
+    const frozenCols = Math.min(store.getFrozenCols(), cols);
+    const frozenH = rowMetrics.offsets[frozenRows];
+    const frozenW = colMetrics.offsets[frozenCols];
 
     const win = useVirtualRange(
       scroll.top,
       scroll.left,
       viewport.width,
       viewport.height,
-      rowHeight,
-      rows,
-      metrics
+      rowMetrics,
+      colMetrics
     );
 
     useEffect(() => {
@@ -153,20 +180,24 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       (coord: CellCoord) => {
         const body = bodyRef.current;
         if (!body) return;
-        const x0 = metrics.offsets[coord.col];
-        const x1 = metrics.offsets[coord.col + 1];
-        const y0 = coord.row * rowHeight;
-        const y1 = y0 + rowHeight;
-        if (x0 < body.scrollLeft) body.scrollLeft = x0;
-        else if (x1 > body.scrollLeft + body.clientWidth) {
-          body.scrollLeft = x1 - body.clientWidth;
+        const x0 = colMetrics.offsets[coord.col];
+        const x1 = colMetrics.offsets[coord.col + 1];
+        const y0 = rowMetrics.offsets[coord.row];
+        const y1 = rowMetrics.offsets[coord.row + 1];
+        if (coord.col >= frozenCols) {
+          if (x0 < body.scrollLeft + frozenW) body.scrollLeft = x0 - frozenW;
+          else if (x1 > body.scrollLeft + body.clientWidth) {
+            body.scrollLeft = x1 - body.clientWidth;
+          }
         }
-        if (y0 < body.scrollTop) body.scrollTop = y0;
-        else if (y1 > body.scrollTop + body.clientHeight) {
-          body.scrollTop = y1 - body.clientHeight;
+        if (coord.row >= frozenRows) {
+          if (y0 < body.scrollTop + frozenH) body.scrollTop = y0 - frozenH;
+          else if (y1 > body.scrollTop + body.clientHeight) {
+            body.scrollTop = y1 - body.clientHeight;
+          }
         }
       },
-      [metrics, rowHeight]
+      [colMetrics, rowMetrics, frozenCols, frozenRows, frozenW, frozenH]
     );
 
     const setActive = useCallback(
@@ -192,14 +223,41 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       (e: { clientX: number; clientY: number }): CellCoord => {
         const body = bodyRef.current!;
         const rect = body.getBoundingClientRect();
-        const x = e.clientX - rect.left + body.scrollLeft;
-        const y = e.clientY - rect.top + body.scrollTop;
+        const relX = e.clientX - rect.left;
+        const relY = e.clientY - rect.top;
+        const x = relX < frozenW ? relX : relX + body.scrollLeft;
+        const y = relY < frozenH ? relY : relY + body.scrollTop;
         return {
-          row: clamp(Math.floor(y / rowHeight), 0, rows - 1),
-          col: metrics.colAtX(clamp(x, 0, metrics.totalWidth - 1)),
+          row: rowMetrics.indexAt(clamp(y, 0, rowMetrics.total - 1)),
+          col: colMetrics.indexAt(clamp(x, 0, colMetrics.total - 1)),
         };
       },
-      [metrics, rowHeight, rows]
+      [colMetrics, rowMetrics, frozenW, frozenH]
+    );
+
+    /**
+     * Move from `start` by `delta`, then skip hidden entries in the travel
+     * direction (falling back toward the start when the edge is hidden).
+     */
+    const stepVisible = useCallback(
+      (
+        start: number,
+        delta: number,
+        count: number,
+        isHidden: (i: number) => boolean
+      ): number => {
+        if (delta === 0) return start;
+        const dir = delta > 0 ? 1 : -1;
+        let t = clamp(start + delta, 0, count - 1);
+        while (t >= 0 && t < count && isHidden(t)) t += dir;
+        if (t < 0 || t >= count) {
+          t = clamp(start + delta, 0, count - 1);
+          while (t >= 0 && t < count && isHidden(t)) t -= dir;
+          if (t < 0 || t >= count) return start;
+        }
+        return t;
+      },
+      []
     );
 
     const openEditor = useCallback(
@@ -302,6 +360,44 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       [selRange, store, rows, cols]
     );
 
+    /** Copy/cut the selection to the internal + async system clipboard. */
+    const copySelection = useCallback(
+      (cut: boolean) => {
+        const { tsv, source } = buildTSV();
+        internalClipboard.current = { tsv, source, cut };
+        navigator.clipboard?.writeText(tsv).catch(() => {});
+      },
+      [buildTSV]
+    );
+
+    /**
+     * Paste via the async clipboard API, falling back to the internal
+     * clipboard. When `notBefore` is given, a native paste handled after
+     * that timestamp wins and this call becomes a no-op.
+     */
+    const pasteFromSystemClipboard = useCallback(
+      (notBefore?: number) => {
+        void (async () => {
+          if (notBefore !== undefined && pasteHandledAt.current >= notBefore) return;
+          let text = "";
+          try {
+            text = await navigator.clipboard.readText();
+          } catch {
+            // Permission denied or API unavailable.
+          }
+          if (notBefore !== undefined && pasteHandledAt.current >= notBefore) return;
+          if (!text && internalClipboard.current) {
+            text = internalClipboard.current.tsv;
+          }
+          if (text) {
+            pasteHandledAt.current = Date.now();
+            applyPaste(text);
+          }
+        })();
+      },
+      [applyPaste]
+    );
+
     const handleCopyCut = useCallback(
       (e: React.ClipboardEvent, cut: boolean) => {
         if (editor) return; // Let the editor's own copy/paste behave normally.
@@ -334,10 +430,18 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         if (editor) return; // The editor input handles its own keys.
         const mod = e.metaKey || e.ctrlKey;
         const { row, col } = active;
+        const isRowHidden = (i: number) => store.isRowHidden(i);
+        const isColHidden = (i: number) => store.isColHidden(i);
         const move = (dr: number, dc: number, extend = false) => {
           e.preventDefault();
           const base = extend ? selection.focus : active;
-          setActive({ row: base.row + dr, col: base.col + dc }, extend);
+          setActive(
+            {
+              row: dr === 0 ? base.row : stepVisible(base.row, dr, rows, isRowHidden),
+              col: dc === 0 ? base.col : stepVisible(base.col, dc, cols, isColHidden),
+            },
+            extend
+          );
         };
         switch (e.key) {
           case "ArrowUp":
@@ -352,9 +456,15 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
             return move(0, e.shiftKey ? -1 : 1);
           case "Enter":
             return move(e.shiftKey ? -1 : 1, 0);
-          case "Home":
+          case "Home": {
             e.preventDefault();
-            return setActive(mod ? { row: 0, col: 0 } : { row, col: 0 });
+            const firstCol = stepVisible(-1, 1, cols, isColHidden);
+            return setActive(
+              mod
+                ? { row: stepVisible(-1, 1, rows, isRowHidden), col: firstCol }
+                : { row, col: firstCol }
+            );
+          }
           case "PageDown":
             return move(Math.max(1, Math.floor(viewport.height / rowHeight)), 0, e.shiftKey);
           case "PageUp":
@@ -395,32 +505,14 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
             // Native copy/cut events follow and set the system clipboard; the
             // internal clipboard + async API cover environments where they
             // don't fire.
-            const { tsv, source } = buildTSV();
-            internalClipboard.current = { tsv, source, cut: k === "x" };
-            navigator.clipboard?.writeText(tsv).catch(() => {});
+            copySelection(k === "x");
             return;
           }
           if (k === "v") {
             // Native paste event should follow; fall back to the async
             // Clipboard API, then the internal clipboard, when it doesn't.
             const at = Date.now();
-            setTimeout(async () => {
-              if (pasteHandledAt.current >= at) return;
-              let text = "";
-              try {
-                text = await navigator.clipboard.readText();
-              } catch {
-                // Permission denied or API unavailable.
-              }
-              if (pasteHandledAt.current >= at) return;
-              if (!text && internalClipboard.current) {
-                text = internalClipboard.current.tsv;
-              }
-              if (text) {
-                pasteHandledAt.current = Date.now();
-                applyPaste(text);
-              }
-            }, 120);
+            setTimeout(() => pasteFromSystemClipboard(at), 120);
             return;
           }
           return;
@@ -437,14 +529,15 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         selection.focus,
         selRange,
         setActive,
+        stepVisible,
         openEditor,
         store,
         rows,
         cols,
         viewport.height,
         rowHeight,
-        applyPaste,
-        buildTSV,
+        copySelection,
+        pasteFromSystemClipboard,
       ]
     );
 
@@ -576,6 +669,237 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       [cols, focusGrid]
     );
 
+    /** Full-line selection with drag-extend and shift-click, from a header. */
+    const beginHeaderDrag = useCallback(
+      (axis: "row" | "col", index: number, shiftKey: boolean) => {
+        setSelection((s) => {
+          const anchorIdx = shiftKey
+            ? axis === "row"
+              ? s.anchor.row
+              : s.anchor.col
+            : index;
+          return axis === "row"
+            ? {
+                anchor: { row: anchorIdx, col: 0 },
+                focus: { row: index, col: cols - 1 },
+              }
+            : {
+                anchor: { row: 0, col: anchorIdx },
+                focus: { row: rows - 1, col: index },
+              };
+        });
+        setFxDraft(null);
+        focusGrid();
+        const onMove = (ev: MouseEvent) => {
+          const c = coordFromMouse(ev);
+          setSelection((s) =>
+            axis === "row"
+              ? { anchor: s.anchor, focus: { row: c.row, col: cols - 1 } }
+              : { anchor: s.anchor, focus: { row: rows - 1, col: c.col } }
+          );
+        };
+        const onUp = () => {
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      },
+      [rows, cols, focusGrid, coordFromMouse]
+    );
+
+    // ---- context menu ----
+
+    const closeMenu = useCallback(() => {
+      setMenu(null);
+      // The menu button held focus; return it so keyboard shortcuts work.
+      focusGrid();
+    }, [focusGrid]);
+
+    const handleCellContextMenu = useCallback(
+      (e: React.MouseEvent) => {
+        e.preventDefault();
+        if (editor) editorRef.current?.commit();
+        const c = coordFromMouse(e);
+        if (!rangeContains(selRange, c.row, c.col)) {
+          // Select directly (no ensureVisible): the cell is already under
+          // the cursor, and scrolling now would close the menu on open.
+          setSelection({ anchor: c, focus: c });
+          setFxDraft(null);
+        }
+        focusGrid();
+        setMenu({ x: e.clientX, y: e.clientY, zone: "cell" });
+      },
+      [editor, coordFromMouse, selRange, focusGrid]
+    );
+
+    const handleHeaderContextMenu = useCallback(
+      (axis: "row" | "col", index: number, e: React.MouseEvent) => {
+        e.preventDefault();
+        if (editor) editorRef.current?.commit();
+        const fullSpan =
+          axis === "row"
+            ? selRange.startCol === 0 && selRange.endCol === cols - 1
+            : selRange.startRow === 0 && selRange.endRow === rows - 1;
+        const inside =
+          axis === "row"
+            ? index >= selRange.startRow && index <= selRange.endRow
+            : index >= selRange.startCol && index <= selRange.endCol;
+        if (!(fullSpan && inside)) {
+          if (axis === "row") selectRow(index);
+          else selectColumn(index);
+        }
+        setMenu({ x: e.clientX, y: e.clientY, zone: axis });
+      },
+      [editor, selRange, rows, cols, selectRow, selectColumn]
+    );
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const menuItems = useMemo((): MenuItem[] => {
+      if (!menu) return [];
+      const r = selRange;
+      const clipboardItems: MenuItem[] = [
+        { label: "Cut", onClick: () => copySelection(true) },
+        { label: "Copy", onClick: () => copySelection(false) },
+        { label: "Paste", onClick: () => pasteFromSystemClipboard() },
+      ];
+      if (menu.zone === "row") {
+        const n = r.endRow - r.startRow + 1;
+        const word = n === 1 ? "row" : `${n} rows`;
+        return [
+          ...clipboardItems,
+          "sep",
+          { label: `Insert ${word} above`, onClick: () => store.insertRows(r.startRow, n) },
+          { label: `Insert ${word} below`, onClick: () => store.insertRows(r.endRow + 1, n) },
+          { label: `Delete ${word}`, onClick: () => store.deleteRows(r.startRow, r.endRow) },
+          "sep",
+          {
+            label: `Move ${word} up`,
+            disabled: r.startRow === 0,
+            onClick: () => store.moveRows(r.startRow, r.endRow, -1),
+          },
+          {
+            label: `Move ${word} down`,
+            disabled: r.endRow === rows - 1,
+            onClick: () => store.moveRows(r.startRow, r.endRow, 1),
+          },
+          "sep",
+          { label: `Hide ${word}`, onClick: () => store.setRowsHidden(r.startRow, r.endRow, true) },
+          {
+            label: "Unhide rows",
+            disabled: !store.hasHiddenRowsIn(r.startRow, r.endRow),
+            onClick: () => store.setRowsHidden(r.startRow, r.endRow, false),
+          },
+          "sep",
+          { label: `Freeze up to row ${r.endRow + 1}`, onClick: () => store.setFrozenRows(r.endRow + 1) },
+          {
+            label: "Unfreeze rows",
+            disabled: store.getFrozenRows() === 0,
+            onClick: () => store.setFrozenRows(0),
+          },
+        ];
+      }
+      if (menu.zone === "col") {
+        const n = r.endCol - r.startCol + 1;
+        const word = n === 1 ? "column" : `${n} columns`;
+        const keyLetter = colToLetters(r.startCol);
+        const hasData = store.getUsedRange() !== null;
+        const sortSheet = (dir: "asc" | "desc") => {
+          const used = store.getUsedRange();
+          if (used) store.sortRange(used, r.startCol, dir);
+        };
+        return [
+          ...clipboardItems,
+          "sep",
+          { label: `Insert ${word} left`, onClick: () => store.insertCols(r.startCol, n) },
+          { label: `Insert ${word} right`, onClick: () => store.insertCols(r.endCol + 1, n) },
+          { label: `Delete ${word}`, onClick: () => store.deleteCols(r.startCol, r.endCol) },
+          "sep",
+          {
+            label: `Move ${word} left`,
+            disabled: r.startCol === 0,
+            onClick: () => store.moveCols(r.startCol, r.endCol, -1),
+          },
+          {
+            label: `Move ${word} right`,
+            disabled: r.endCol === cols - 1,
+            onClick: () => store.moveCols(r.startCol, r.endCol, 1),
+          },
+          "sep",
+          { label: `Hide ${word}`, onClick: () => store.setColsHidden(r.startCol, r.endCol, true) },
+          {
+            label: "Unhide columns",
+            disabled: !store.hasHiddenColsIn(r.startCol, r.endCol),
+            onClick: () => store.setColsHidden(r.startCol, r.endCol, false),
+          },
+          "sep",
+          {
+            label: `Freeze up to column ${colToLetters(r.endCol)}`,
+            onClick: () => store.setFrozenCols(r.endCol + 1),
+          },
+          {
+            label: "Unfreeze columns",
+            disabled: store.getFrozenCols() === 0,
+            onClick: () => store.setFrozenCols(0),
+          },
+          "sep",
+          {
+            label: `Sort sheet A→Z by ${keyLetter}`,
+            disabled: !hasData,
+            onClick: () => sortSheet("asc"),
+          },
+          {
+            label: `Sort sheet Z→A by ${keyLetter}`,
+            disabled: !hasData,
+            onClick: () => sortSheet("desc"),
+          },
+        ];
+      }
+      const nR = r.endRow - r.startRow + 1;
+      const nC = r.endCol - r.startCol + 1;
+      const rowWord = nR === 1 ? "row" : `${nR} rows`;
+      const colWord = nC === 1 ? "column" : `${nC} columns`;
+      return [
+        ...clipboardItems,
+        "sep",
+        { label: `Insert ${rowWord} above`, onClick: () => store.insertRows(r.startRow, nR) },
+        { label: `Insert ${colWord} left`, onClick: () => store.insertCols(r.startCol, nC) },
+        { label: `Delete ${rowWord}`, onClick: () => store.deleteRows(r.startRow, r.endRow) },
+        { label: `Delete ${colWord}`, onClick: () => store.deleteCols(r.startCol, r.endCol) },
+        "sep",
+        {
+          label: "Sort range A→Z",
+          disabled: r.startRow === r.endRow,
+          onClick: () => store.sortRange(r, r.startCol, "asc"),
+        },
+        {
+          label: "Sort range Z→A",
+          disabled: r.startRow === r.endRow,
+          onClick: () => store.sortRange(r, r.startCol, "desc"),
+        },
+        "sep",
+        {
+          label: "Filter by cell value",
+          onClick: () => store.filterByValue(active.col, active.row),
+        },
+        {
+          label: "Clear filter",
+          disabled: !store.hasFilter(),
+          onClick: () => store.clearFilter(),
+        },
+      ];
+    }, [
+      menu,
+      selRange,
+      active,
+      store,
+      rows,
+      cols,
+      copySelection,
+      pasteFromSystemClipboard,
+      version,
+    ]);
+
     // ---- imperative API ----
 
     useImperativeHandle(
@@ -603,49 +927,66 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
 
     // ---- rendering ----
 
-    const cells = [];
-    for (let row = win.rowStart; row <= win.rowEnd; row++) {
-      for (let col = win.colStart; col <= win.colEnd; col++) {
-        const display = store.getDisplay(row, col);
-        const cell = display === "" ? null : store.getCell(row, col);
-        const isNum = cell !== null && !cell.error && typeof cell.value === "number";
-        const cs = store.getStyle(row, col);
-        cells.push(
-          <div
-            key={cellKey(row, col)}
-            className={
-              "xg-cell" +
-              (isNum ? " xg-cell--num" : "") +
-              (cell?.error ? " xg-cell--err" : "")
-            }
-            style={{
-              left: metrics.offsets[col],
-              top: row * rowHeight,
-              width: colWidths[col],
-              height: rowHeight,
-              ...(cs ? cellStyleCss(cs) : null),
-            }}
-          >
-            {display}
-          </div>
-        );
+    const renderCells = (
+      r0: number,
+      r1: number,
+      c0: number,
+      c1: number
+    ): React.ReactNode[] => {
+      const out: React.ReactNode[] = [];
+      for (let row = r0; row <= r1; row++) {
+        if (rowHeights[row] === 0) continue;
+        for (let col = c0; col <= c1; col++) {
+          if (colWidths[col] === 0) continue;
+          const display = store.getDisplay(row, col);
+          const cell = display === "" ? null : store.getCell(row, col);
+          const isNum =
+            cell !== null && !cell.error && typeof cell.value === "number";
+          const cs = store.getStyle(row, col);
+          out.push(
+            <div
+              key={cellKey(row, col)}
+              className={
+                "xg-cell" +
+                (isNum ? " xg-cell--num" : "") +
+                (cell?.error ? " xg-cell--err" : "")
+              }
+              style={{
+                left: colMetrics.offsets[col],
+                top: rowMetrics.offsets[row],
+                width: colWidths[col],
+                height: rowHeights[row],
+                ...(cs ? cellStyleCss(cs) : null),
+              }}
+            >
+              {display}
+            </div>
+          );
+        }
       }
-    }
+      return out;
+    };
 
-    const colHeaders = [];
-    for (let col = win.colStart; col <= win.colEnd; col++) {
+    const colHeaderCell = (col: number): React.ReactNode => {
+      if (colWidths[col] === 0) return null;
       const inSel = col >= selRange.startCol && col <= selRange.endCol;
-      colHeaders.push(
+      return (
         <div
           key={col}
           className={"xg-header-cell" + (inSel ? " xg-header-cell--sel" : "")}
-          style={{ left: metrics.offsets[col], top: 0, width: colWidths[col], height: HEADER_HEIGHT }}
+          style={{
+            left: colMetrics.offsets[col],
+            top: 0,
+            width: colWidths[col],
+            height: HEADER_HEIGHT,
+          }}
           onMouseDown={(e) => {
             if (e.button === 0) {
               e.preventDefault(); // Keep keyboard focus on the grid body.
-              selectColumn(col);
+              beginHeaderDrag("col", col, e.shiftKey);
             }
           }}
+          onContextMenu={(e) => handleHeaderContextMenu("col", col, e)}
         >
           {colToLetters(col)}
           <div
@@ -654,39 +995,78 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
           />
         </div>
       );
-    }
+    };
 
-    const rowHeaders = [];
-    for (let row = win.rowStart; row <= win.rowEnd; row++) {
+    const rowHeaderCell = (row: number): React.ReactNode => {
+      if (rowHeights[row] === 0) return null;
       const inSel = row >= selRange.startRow && row <= selRange.endRow;
-      rowHeaders.push(
+      return (
         <div
           key={row}
           className={"xg-header-cell" + (inSel ? " xg-header-cell--sel" : "")}
-          style={{ left: 0, top: row * rowHeight, width: ROW_HEADER_WIDTH, height: rowHeight }}
+          style={{
+            left: 0,
+            top: rowMetrics.offsets[row],
+            width: ROW_HEADER_WIDTH,
+            height: rowHeights[row],
+          }}
           onMouseDown={(e) => {
             if (e.button === 0) {
               e.preventDefault(); // Keep keyboard focus on the grid body.
-              selectRow(row);
+              beginHeaderDrag("row", row, e.shiftKey);
             }
           }}
+          onContextMenu={(e) => handleHeaderContextMenu("row", row, e)}
         >
           {row + 1}
         </div>
       );
+    };
+
+    const colHeaders: React.ReactNode[] = [];
+    for (let col = win.colStart; col <= win.colEnd; col++) {
+      colHeaders.push(colHeaderCell(col));
+    }
+    const rowHeaders: React.ReactNode[] = [];
+    for (let row = win.rowStart; row <= win.rowEnd; row++) {
+      rowHeaders.push(rowHeaderCell(row));
+    }
+    const frozenColHeaders: React.ReactNode[] = [];
+    for (let col = 0; col < frozenCols; col++) {
+      frozenColHeaders.push(colHeaderCell(col));
+    }
+    const frozenRowHeaders: React.ReactNode[] = [];
+    for (let row = 0; row < frozenRows; row++) {
+      frozenRowHeaders.push(rowHeaderCell(row));
     }
 
     const rectForRange = (r: CellRange) => ({
-      left: metrics.offsets[r.startCol],
-      top: r.startRow * rowHeight,
-      width: metrics.offsets[r.endCol + 1] - metrics.offsets[r.startCol],
-      height: (r.endRow - r.startRow + 1) * rowHeight,
+      left: colMetrics.offsets[r.startCol],
+      top: rowMetrics.offsets[r.startRow],
+      width: colMetrics.offsets[r.endCol + 1] - colMetrics.offsets[r.startCol],
+      height: rowMetrics.offsets[r.endRow + 1] - rowMetrics.offsets[r.startRow],
     });
 
     const selRect = rectForRange(selRange);
     const activeRect = rectForRange(normalizeRange(active, active));
     const isMultiCell =
       selRange.startRow !== selRange.endRow || selRange.startCol !== selRange.endCol;
+
+    const overlays = (withFillPreview: boolean): React.ReactNode => (
+      <>
+        {isMultiCell && <div className="xg-selection" style={selRect} />}
+        <div className="xg-active" style={activeRect} />
+        {withFillPreview && fillPreview && (
+          <div className="xg-fill-preview" style={rectForRange(fillPreview)} />
+        )}
+      </>
+    );
+
+    const paneHandlers = {
+      onMouseDown: beginSelectDrag,
+      onDoubleClick: handleDoubleClick,
+      onContextMenu: handleCellContextMenu,
+    };
 
     const activeRaw = store.getRaw(active.row, active.col);
 
@@ -751,63 +1131,135 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
               className="xg-header-inner"
               style={{
                 transform: `translateX(${-scroll.left}px)`,
-                width: metrics.totalWidth,
+                width: colMetrics.total,
               }}
             >
               {colHeaders}
             </div>
+            {frozenW > 0 && (
+              <div
+                className="xg-header-frozen"
+                style={{ width: frozenW, height: HEADER_HEIGHT }}
+              >
+                {frozenColHeaders}
+              </div>
+            )}
           </div>
           <div className="xg-rowheaders">
             <div
               className="xg-header-inner"
               style={{
                 transform: `translateY(${-scroll.top}px)`,
-                height: totalHeight,
+                height: rowMetrics.total,
               }}
             >
               {rowHeaders}
             </div>
-          </div>
-          <div
-            ref={bodyRef}
-            className="xg-body"
-            tabIndex={0}
-            onScroll={(e) => {
-              const t = e.currentTarget;
-              setScroll({ top: t.scrollTop, left: t.scrollLeft });
-            }}
-            onKeyDown={handleKeyDown}
-            onMouseDown={beginSelectDrag}
-            onDoubleClick={handleDoubleClick}
-          >
-            <div
-              className="xg-spacer"
-              style={{ width: metrics.totalWidth, height: totalHeight }}
-            />
-            {cells}
-            {isMultiCell && <div className="xg-selection" style={selRect} />}
-            <div className="xg-active" style={activeRect} />
-            {!editor && (
+            {frozenH > 0 && (
               <div
-                className="xg-fill-handle"
-                style={{
-                  left: selRect.left + selRect.width - 3,
-                  top: selRect.top + selRect.height - 3,
-                }}
-                onMouseDown={beginFillDrag}
-              />
+                className="xg-header-frozen"
+                style={{ width: ROW_HEADER_WIDTH, height: frozenH }}
+              >
+                {frozenRowHeaders}
+              </div>
             )}
-            {fillPreview && (
-              <div className="xg-fill-preview" style={rectForRange(fillPreview)} />
+          </div>
+          <div className="xg-bodywrap">
+            <div
+              ref={bodyRef}
+              className="xg-body"
+              tabIndex={0}
+              onScroll={(e) => {
+                const t = e.currentTarget;
+                setScroll({ top: t.scrollTop, left: t.scrollLeft });
+              }}
+              onKeyDown={handleKeyDown}
+              {...paneHandlers}
+            >
+              <div
+                className="xg-spacer"
+                style={{ width: colMetrics.total, height: rowMetrics.total }}
+              />
+              {renderCells(win.rowStart, win.rowEnd, win.colStart, win.colEnd)}
+              {overlays(true)}
+              {!editor && (
+                <div
+                  className="xg-fill-handle"
+                  style={{
+                    left: selRect.left + selRect.width - 3,
+                    top: selRect.top + selRect.height - 3,
+                  }}
+                  onMouseDown={beginFillDrag}
+                />
+              )}
+            </div>
+            {frozenH > 0 && (
+              <div
+                className="xg-pane xg-pane--top"
+                style={{ top: 0, left: 0, right: 0, height: frozenH }}
+                {...paneHandlers}
+              >
+                <div
+                  className="xg-pane-inner"
+                  style={{
+                    transform: `translateX(${-scroll.left}px)`,
+                    width: colMetrics.total,
+                    height: frozenH,
+                  }}
+                >
+                  {renderCells(0, frozenRows - 1, win.colStart, win.colEnd)}
+                  {overlays(false)}
+                </div>
+              </div>
+            )}
+            {frozenW > 0 && (
+              <div
+                className="xg-pane xg-pane--left"
+                style={{ top: 0, left: 0, bottom: 0, width: frozenW }}
+                {...paneHandlers}
+              >
+                <div
+                  className="xg-pane-inner"
+                  style={{
+                    transform: `translateY(${-scroll.top}px)`,
+                    width: frozenW,
+                    height: rowMetrics.total,
+                  }}
+                >
+                  {renderCells(win.rowStart, win.rowEnd, 0, frozenCols - 1)}
+                  {overlays(false)}
+                </div>
+              </div>
+            )}
+            {frozenH > 0 && frozenW > 0 && (
+              <div
+                className="xg-pane xg-pane--corner"
+                style={{ top: 0, left: 0, width: frozenW, height: frozenH }}
+                {...paneHandlers}
+              >
+                <div
+                  className="xg-pane-inner"
+                  style={{ width: frozenW, height: frozenH }}
+                >
+                  {renderCells(0, frozenRows - 1, 0, frozenCols - 1)}
+                  {overlays(false)}
+                </div>
+              </div>
             )}
             {editor && (
               <CellEditor
                 key={cellKey(editor.row, editor.col)}
                 editor={editor}
-                left={metrics.offsets[editor.col]}
-                top={editor.row * rowHeight}
+                left={
+                  colMetrics.offsets[editor.col] -
+                  (editor.col < frozenCols ? 0 : scroll.left)
+                }
+                top={
+                  rowMetrics.offsets[editor.row] -
+                  (editor.row < frozenRows ? 0 : scroll.top)
+                }
                 width={colWidths[editor.col]}
-                height={rowHeight}
+                height={rowHeights[editor.row] || rowHeight}
                 onCommit={commitEditor}
                 onCancel={cancelEditor}
                 apiRef={editorRef}
@@ -815,6 +1267,14 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
             )}
           </div>
         </div>
+        {menu && (
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            items={menuItems}
+            onClose={closeMenu}
+          />
+        )}
       </div>
     );
   }

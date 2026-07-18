@@ -65,7 +65,8 @@ under the `xg-` class prefix and must be imported once per app.
 
 ## Interactions
 
-- **Select**: click, drag, Shift+click / Shift+arrows, row/column header click, Ctrl/Cmd+A.
+- **Select**: click, drag, Shift+click / Shift+arrows, row/column header click or drag (multi-row/column), Ctrl/Cmd+A.
+- **Context menus**: right-click a cell, row header, or column header. Cells: cut/copy/paste, insert/delete rows & columns, sort the selected range, filter by cell value, clear filter. Row/column headers: cut/copy/paste, insert/delete/move/hide/unhide lines, freeze/unfreeze panes, and (columns) sort the sheet by that column. Insert/delete/move rewrite formula references sheet-wide (references to deleted lines become `#REF!`) and undo as one step.
 - **Navigate**: arrows, Tab/Shift+Tab, Enter/Shift+Enter, Home, Ctrl/Cmd+Home, PageUp/PageDown.
 - **Edit**: double-click, F2, or just start typing; Enter/Tab commit (moving down/right), Escape cancels; Delete clears the selection; the formula bar edits the active cell.
 - **Clipboard**: Ctrl/Cmd+C/X/V with TSV interop (pastes to/from Excel and Google Sheets). Copied formulas adjust relative references by the paste offset.
@@ -97,6 +98,8 @@ npm run build      # dist/ (ESM + CJS + d.ts + styles.css)
 
 ## Not (yet) included
 
-Merged cells, borders, format painter, font family, frozen panes, row resize,
-sorting/filtering, multi-sheet workbooks, `.xlsx` import/export, touch
-gestures. Cell styles are display-only and not exposed through `getData()`.
+Merged cells, borders, format painter, font family, row resize, autofilter
+dropdowns (only filter-by-value), multi-sheet workbooks, `.xlsx`
+import/export, touch gestures. Cell styles are display-only and not exposed
+through `getData()`. Sorting moves raw content only (styles and formula
+references are not rewritten by sort).

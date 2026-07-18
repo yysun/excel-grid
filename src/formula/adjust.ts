@@ -1,9 +1,10 @@
-// Formula reference adjustment for copy/paste and fill.
+// Formula reference adjustment for copy/paste, fill, and structural edits.
 // Features: shifts relative cell references in a formula string by a
 // (row, col) offset; $-anchored axes stay fixed; references pushed out of
-// bounds are replaced with #REF!. Also extracts referenced cells/ranges from
-// an AST for dependency tracking.
-// Recent changes: initial implementation.
+// bounds are replaced with #REF!. remapFormulaAxis rewrites every reference
+// (anchored or not) through a row/col index mapping for insert/delete/move.
+// Also extracts referenced cells/ranges from an AST for dependency tracking.
+// Recent changes: added remapFormulaAxis for the context-menu structural ops.
 
 import { formatParsedRef, type ParsedRef } from "../utils/cellRef";
 import type { CellRange } from "../types";
@@ -44,6 +45,43 @@ export function adjustFormula(
       moved.row < 0 || moved.col < 0 || moved.row >= rowCount || moved.col >= colCount
         ? "#REF!"
         : formatParsedRef(moved);
+    out += body.slice(last, t.start) + replacement;
+    last = t.end;
+  }
+  out += body.slice(last);
+  return "=" + out;
+}
+
+/**
+ * Rewrite every reference of a formula through an index mapping on one axis
+ * (for insert/delete/move of rows or columns). Unlike adjustFormula, $
+ * anchors do not pin a reference: structural edits move anchored refs too.
+ * A reference whose mapped index is null or out of bounds becomes #REF!.
+ */
+export function remapFormulaAxis(
+  formula: string,
+  axis: "row" | "col",
+  map: (index: number) => number | null,
+  rowCount: number,
+  colCount: number
+): string {
+  const body = formula.slice(1);
+  let tokens;
+  try {
+    tokens = tokenize(body);
+  } catch {
+    return formula; // Unparseable text is left untouched.
+  }
+  let out = "";
+  let last = 0;
+  for (const t of tokens) {
+    if (t.type !== "ref") continue;
+    const row = axis === "row" ? map(t.ref.row) : t.ref.row;
+    const col = axis === "col" ? map(t.ref.col) : t.ref.col;
+    const replacement =
+      row === null || col === null || row < 0 || col < 0 || row >= rowCount || col >= colCount
+        ? "#REF!"
+        : formatParsedRef({ row, col, absRow: t.ref.absRow, absCol: t.ref.absCol });
     out += body.slice(last, t.start) + replacement;
     last = t.end;
   }

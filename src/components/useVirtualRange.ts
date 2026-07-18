@@ -1,36 +1,39 @@
 // Virtual windowing math for the grid.
 // Features: computes visible row/column index windows (with overscan) from
-// scroll offsets, fixed row height, and variable column widths via a
-// prefix-sum offset array with binary search.
-// Recent changes: initial implementation.
+// scroll offsets and axis metrics — prefix-sum offset arrays with binary
+// search over variable sizes. Zero-size entries (hidden rows/cols) are
+// naturally skipped by the search.
+// Recent changes: generalized column metrics to axis-neutral AxisMetrics and
+// switched rows from uniform heights to metrics (hidden rows support).
 
 import { useMemo } from "react";
 
-export interface ColMetrics {
-  /** offsets[i] = x position of column i; offsets[colCount] = total width. */
+export interface AxisMetrics {
+  /** offsets[i] = position of entry i; offsets[count] = total size. */
   offsets: number[];
-  totalWidth: number;
-  colAtX(x: number): number;
+  total: number;
+  /** Index of the entry containing position p (zero-size entries skipped). */
+  indexAt(p: number): number;
 }
 
-export function buildColMetrics(widths: number[]): ColMetrics {
-  const offsets = new Array<number>(widths.length + 1);
+export function buildAxisMetrics(sizes: number[]): AxisMetrics {
+  const offsets = new Array<number>(sizes.length + 1);
   offsets[0] = 0;
-  for (let i = 0; i < widths.length; i++) offsets[i + 1] = offsets[i] + widths[i];
-  const totalWidth = offsets[widths.length];
-  const colAtX = (x: number): number => {
-    if (x <= 0) return 0;
-    if (x >= totalWidth) return widths.length - 1;
+  for (let i = 0; i < sizes.length; i++) offsets[i + 1] = offsets[i] + sizes[i];
+  const total = offsets[sizes.length];
+  const indexAt = (p: number): number => {
+    if (p <= 0) return 0;
+    if (p >= total) return sizes.length - 1;
     let lo = 0;
-    let hi = widths.length - 1;
+    let hi = sizes.length - 1;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (offsets[mid + 1] <= x) lo = mid + 1;
+      if (offsets[mid + 1] <= p) lo = mid + 1;
       else hi = mid;
     }
     return lo;
   };
-  return { offsets, totalWidth, colAtX };
+  return { offsets, total, indexAt };
 }
 
 export interface VirtualWindow {
@@ -47,21 +50,22 @@ export function useVirtualRange(
   scrollLeft: number,
   viewportWidth: number,
   viewportHeight: number,
-  rowHeight: number,
-  rowCount: number,
-  metrics: ColMetrics
+  rowMetrics: AxisMetrics,
+  colMetrics: AxisMetrics
 ): VirtualWindow {
   return useMemo(() => {
-    const rowStart = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
+    const rowCount = rowMetrics.offsets.length - 1;
+    const colCount = colMetrics.offsets.length - 1;
+    const rowStart = Math.max(0, rowMetrics.indexAt(scrollTop) - OVERSCAN);
     const rowEnd = Math.min(
       rowCount - 1,
-      Math.ceil((scrollTop + viewportHeight) / rowHeight) + OVERSCAN
+      rowMetrics.indexAt(scrollTop + viewportHeight) + OVERSCAN
     );
-    const colStart = Math.max(0, metrics.colAtX(scrollLeft) - OVERSCAN);
+    const colStart = Math.max(0, colMetrics.indexAt(scrollLeft) - OVERSCAN);
     const colEnd = Math.min(
-      metrics.offsets.length - 2,
-      metrics.colAtX(scrollLeft + viewportWidth) + OVERSCAN
+      colCount - 1,
+      colMetrics.indexAt(scrollLeft + viewportWidth) + OVERSCAN
     );
     return { rowStart, rowEnd, colStart, colEnd };
-  }, [scrollTop, scrollLeft, viewportWidth, viewportHeight, rowHeight, rowCount, metrics]);
+  }, [scrollTop, scrollLeft, viewportWidth, viewportHeight, rowMetrics, colMetrics]);
 }
