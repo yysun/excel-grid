@@ -4,10 +4,10 @@
 // navigation, in-cell + formula-bar editing, formula recalculation via
 // GridStore, TSV clipboard (native copy/cut/paste events + internal fallback),
 // undo/redo shortcuts, column resize grips, and a fill handle with
-// relative-reference adjustment.
-// Recent changes: header clicks preventDefault to keep grid focus; clipboard
-// shortcuts also use the async Clipboard API + internal fallback; commitEditor
-// no longer runs side effects inside a state updater (StrictMode safety).
+// relative-reference adjustment. A WeCom-style formatting toolbar renders
+// above the formula bar (toolbar prop, default true) and cells render their
+// CellStyle (font flags/size, colors, alignment).
+// Recent changes: added the Toolbar and per-cell style rendering.
 
 import {
   forwardRef,
@@ -23,9 +23,12 @@ import { GridStore, type RawChange } from "../state/GridStore";
 import type {
   CellCoord,
   CellRange,
+  CellStyle,
   ExcelGridHandle,
   ExcelGridProps,
+  HAlign,
 } from "../types";
+import { Toolbar } from "./Toolbar";
 import {
   cellKey,
   colToLetters,
@@ -73,6 +76,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       rowHeight = 24,
       defaultColWidth = 100,
       className,
+      toolbar = true,
     } = props;
 
     const storeRef = useRef<GridStore | null>(null);
@@ -605,6 +609,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         const display = store.getDisplay(row, col);
         const cell = display === "" ? null : store.getCell(row, col);
         const isNum = cell !== null && !cell.error && typeof cell.value === "number";
+        const cs = store.getStyle(row, col);
         cells.push(
           <div
             key={cellKey(row, col)}
@@ -618,6 +623,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
               top: row * rowHeight,
               width: colWidths[col],
               height: rowHeight,
+              ...(cs ? cellStyleCss(cs) : null),
             }}
           >
             {display}
@@ -691,6 +697,9 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         onCut={(e) => handleCopyCut(e, true)}
         onPaste={handlePaste}
       >
+        {toolbar && (
+          <Toolbar store={store} selRange={selRange} active={active} rows={rows} />
+        )}
         <div className="xg-formula-bar">
           <div className="xg-name-box">{formatCellRef(active.row, active.col)}</div>
           <div className="xg-fx-label">fx</div>
@@ -810,6 +819,28 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
     );
   }
 );
+
+const JUSTIFY: Record<HAlign, React.CSSProperties["justifyContent"]> = {
+  left: "flex-start",
+  center: "center",
+  right: "flex-end",
+};
+
+/** Inline CSS for a cell's CellStyle (merged after positional styles). */
+function cellStyleCss(cs: CellStyle): React.CSSProperties {
+  const deco = [cs.underline && "underline", cs.strike && "line-through"]
+    .filter(Boolean)
+    .join(" ");
+  return {
+    fontWeight: cs.bold ? 600 : undefined,
+    fontStyle: cs.italic ? "italic" : undefined,
+    textDecoration: deco || undefined,
+    fontSize: cs.fontSize,
+    color: cs.color,
+    background: cs.background,
+    justifyContent: cs.align ? JUSTIFY[cs.align] : undefined,
+  };
+}
 
 interface CellEditorProps {
   editor: EditorState;

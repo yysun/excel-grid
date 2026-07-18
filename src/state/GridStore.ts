@@ -2,15 +2,23 @@
 // Features: sparse cell map keyed "row,col"; literal parsing (numbers/booleans/
 // text); formula parsing + incremental recalculation through a dependency
 // graph with #CYCLE! detection; undo/redo as inverse patch batches; column
-// widths; change notification with computed values.
-// Recent changes: clearRange iterates occupied cells only; recompute uses a
-// Set for touched-key exclusion.
+// widths; change notification with computed values; sparse per-cell styles
+// (applyStyle/clearFormat, undoable) with number-format aware display.
+// Recent changes: added the style layer — styles map, raw/style patch union
+// on the shared undo stacks, applyStyle/clearFormat/getStyle, and
+// percent/thousands/decimals formatting in getDisplay.
 
 import { FormulaError, type ErrorCode } from "../formula/errors";
 import { evaluate, type EvalContext } from "../formula/evaluate";
 import { extractRefs, hasRefError } from "../formula/adjust";
 import { parse, type Ast } from "../formula/parser";
-import type { CellData, CellRange, CellValue, GridChange } from "../types";
+import type {
+  CellData,
+  CellRange,
+  CellStyle,
+  CellValue,
+  GridChange,
+} from "../types";
 import {
   cellKey,
   formatCellRef,
@@ -26,12 +34,26 @@ interface CellRecord {
   error?: ErrorCode;
 }
 
-interface Patch {
+interface RawPatch {
+  kind: "raw";
   row: number;
   col: number;
   before: string | null;
   after: string | null;
 }
+
+interface StylePatch {
+  kind: "style";
+  row: number;
+  col: number;
+  before: CellStyle | null;
+  after: CellStyle | null;
+}
+
+type Patch = RawPatch | StylePatch;
+
+/** Styling a range larger than this is a no-op to keep the UI responsive. */
+export const STYLE_CELL_CAP = 200_000;
 
 export interface RawChange {
   row: number;
@@ -41,6 +63,8 @@ export interface RawChange {
 
 export class GridStore {
   private cells = new Map<string, CellRecord>();
+  /** Sparse per-cell styles, independent of cell values. */
+  private styles = new Map<string, CellStyle>();
   /** cellKey -> formula cell keys that reference it directly. */
   private dependents = new Map<string, Set<string>>();
   /** Range dependencies: any change inside `range` dirties `dependent`. */
@@ -82,13 +106,20 @@ export class GridStore {
     return { raw: rec.raw, value: rec.value, error: rec.error };
   }
 
-  /** Text shown in the cell. */
+  /** Text shown in the cell (number-format aware). */
   getDisplay(row: number, col: number): string {
-    const rec = this.cells.get(cellKey(row, col));
+    const key = cellKey(row, col);
+    const rec = this.cells.get(key);
     if (!rec) return "";
     if (rec.error) return rec.error;
     if (rec.value === null) return "";
     if (typeof rec.value === "boolean") return rec.value ? "TRUE" : "FALSE";
+    if (typeof rec.value === "number") {
+      const style = this.styles.get(key);
+      if (style && (style.numFmt !== undefined || style.decimals !== undefined)) {
+        return formatNumber(rec.value, style);
+      }
+    }
     return String(rec.value);
   }
 
@@ -115,6 +146,10 @@ export class GridStore {
     this.notify([]);
   }
 
+  getStyle(row: number, col: number): CellStyle | null {
+    return this.styles.get(cellKey(row, col)) ?? null;
+  }
+
   canUndo(): boolean {
     return this.undoStack.length > 0;
   }
@@ -138,7 +173,7 @@ export class GridStore {
       const before = this.cells.get(key)?.raw ?? null;
       const after = c.raw === "" ? null : c.raw;
       if (before === after) continue;
-      patches.push({ row: c.row, col: c.col, before, after });
+      patches.push({ kind: "raw", row: c.row, col: c.col, before, after });
       this.applyRaw(c.row, c.col, after);
       touched.push(key);
     }
@@ -162,6 +197,42 @@ export class GridStore {
     this.setCells(changes);
   }
 
+  /**
+   * Merge a style patch into every cell of `range` as one undoable action.
+   * A key present in `patch` whose value is `undefined` removes that
+   * property. Ranges above STYLE_CELL_CAP cells are a no-op.
+   */
+  applyStyle(range: CellRange, patch: Partial<CellStyle>): void {
+    const r = this.clampRange(range);
+    const count = (r.endRow - r.startRow + 1) * (r.endCol - r.startCol + 1);
+    if (count <= 0 || count > STYLE_CELL_CAP) return;
+    const patches: Patch[] = [];
+    for (let row = r.startRow; row <= r.endRow; row++) {
+      for (let col = r.startCol; col <= r.endCol; col++) {
+        const key = cellKey(row, col);
+        const before = this.styles.get(key) ?? null;
+        const after = mergeStyle(before, patch);
+        if (stylesEqual(before, after)) continue;
+        patches.push({ kind: "style", row, col, before, after });
+        this.setStyleRecord(row, col, after);
+      }
+    }
+    this.commitStylePatches(patches);
+  }
+
+  /** Remove all styling from cells in `range` as one undoable action. */
+  clearFormat(range: CellRange): void {
+    // Iterate occupied style records only, like clearRange.
+    const patches: Patch[] = [];
+    for (const [key, style] of this.styles) {
+      const { row, col } = parseKey(key);
+      if (!rangeContains(range, row, col)) continue;
+      patches.push({ kind: "style", row, col, before: style, after: null });
+    }
+    for (const p of patches) this.setStyleRecord(p.row, p.col, null);
+    this.commitStylePatches(patches);
+  }
+
   undo(): void {
     const batch = this.undoStack.pop();
     if (!batch) return;
@@ -179,11 +250,37 @@ export class GridStore {
   private applyPatchBatch(batch: Patch[], side: "before" | "after"): void {
     const touched: string[] = [];
     for (const p of batch) {
-      this.applyRaw(p.row, p.col, p[side]);
-      touched.push(cellKey(p.row, p.col));
+      if (p.kind === "raw") {
+        this.applyRaw(p.row, p.col, p[side]);
+        touched.push(cellKey(p.row, p.col));
+      } else {
+        this.setStyleRecord(p.row, p.col, p[side]);
+      }
     }
     const recomputed = this.recompute(touched);
     this.notify(this.toGridChanges(new Set([...touched, ...recomputed])));
+  }
+
+  private commitStylePatches(patches: Patch[]): void {
+    if (patches.length === 0) return;
+    this.undoStack.push(patches);
+    this.redoStack = [];
+    this.notify([]);
+  }
+
+  private setStyleRecord(row: number, col: number, style: CellStyle | null): void {
+    const key = cellKey(row, col);
+    if (style === null) this.styles.delete(key);
+    else this.styles.set(key, style);
+  }
+
+  private clampRange(range: CellRange): CellRange {
+    return {
+      startRow: Math.max(0, range.startRow),
+      startCol: Math.max(0, range.startCol),
+      endRow: Math.min(this.rowCount - 1, range.endRow),
+      endCol: Math.min(this.colCount - 1, range.endCol),
+    };
   }
 
   // ---- internals ----
@@ -341,6 +438,45 @@ export class GridStore {
         return out;
       },
     };
+  }
+}
+
+/** Merge a partial style into a base style; `undefined` values remove keys. */
+function mergeStyle(
+  base: CellStyle | null,
+  patch: Partial<CellStyle>
+): CellStyle | null {
+  const out: CellStyle = { ...(base ?? {}) };
+  for (const k of Object.keys(patch) as (keyof CellStyle)[]) {
+    const v = patch[k];
+    if (v === undefined) delete out[k];
+    else (out as Record<string, unknown>)[k] = v;
+  }
+  return Object.keys(out).length === 0 ? null : out;
+}
+
+function stylesEqual(a: CellStyle | null, b: CellStyle | null): boolean {
+  if (a === null || b === null) return a === b;
+  const keys = Object.keys(a) as (keyof CellStyle)[];
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((k) => a[k] === b[k]);
+}
+
+/** Format a numeric value for display according to the cell's style. */
+export function formatNumber(v: number, style: CellStyle): string {
+  const d = style.decimals;
+  switch (style.numFmt) {
+    case "percent":
+      return (v * 100).toFixed(d ?? 0) + "%";
+    case "thousands":
+      return v.toLocaleString(
+        "en-US",
+        d === undefined
+          ? { maximumFractionDigits: 10 }
+          : { minimumFractionDigits: d, maximumFractionDigits: d }
+      );
+    default:
+      return d === undefined ? String(v) : v.toFixed(d);
   }
 }
 

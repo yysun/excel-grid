@@ -1,7 +1,10 @@
 // Shared public + internal types for the excel-grid library.
-// Features: cell/coord/range models, change events, component props and
-// imperative handle types re-exported from src/index.ts.
-// Recent changes: initial implementation.
+// Features: cell/coord/range models, change events, cell style model
+// (bold/italic/underline/strike, font size, colors, alignment, number
+// formats), component props and imperative handle types re-exported from
+// src/index.ts.
+// Recent changes: added CellStyle/NumFmt/HAlign and the toolbar prop for the
+// WeCom-style toolbar.
 
 /** A computed scalar value a cell can hold. */
 export type CellValue = string | number | boolean | null;
@@ -28,6 +31,34 @@ export interface CellData {
   value: CellValue;
   /** Excel-style error code (e.g. "#DIV/0!") when evaluation failed. */
   error?: string;
+}
+
+/** Number display format applied on top of a numeric cell value. */
+export type NumFmt = "general" | "percent" | "thousands";
+
+/** Horizontal cell alignment. */
+export type HAlign = "left" | "center" | "right";
+
+/**
+ * Visual style of one cell, stored sparsely and independent of the cell's
+ * value (an empty cell can carry a fill color). All fields optional; an
+ * absent field means "default".
+ */
+export interface CellStyle {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strike?: boolean;
+  /** Font size in px. */
+  fontSize?: number;
+  /** Text color (CSS color). */
+  color?: string;
+  /** Fill / background color (CSS color). */
+  background?: string;
+  align?: HAlign;
+  numFmt?: NumFmt;
+  /** Fixed decimal places for numeric display (0-10). */
+  decimals?: number;
 }
 
 /** One changed cell reported through onChange. */
@@ -57,6 +88,8 @@ export interface ExcelGridProps {
   defaultColWidth?: number;
   /** Extra class on the root element. */
   className?: string;
+  /** Show the WeCom-style formatting toolbar above the formula bar. Default true. */
+  toolbar?: boolean;
 }
 
 /** Imperative API exposed through the component ref. */

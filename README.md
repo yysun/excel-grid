@@ -2,8 +2,10 @@
 
 An Excel-style spreadsheet grid for React — cell editing, formulas with live
 recalculation, keyboard navigation, clipboard interop, undo/redo, column
-resize, and a fill handle, in a virtualized grid that handles 10,000 × 100
-cells and beyond. No runtime dependencies besides React.
+resize, a fill handle, and a WeCom-style formatting toolbar (bold/italic/
+underline/strikethrough, text & fill colors, font size, alignment, number
+formats, quick sum), in a virtualized grid that handles 10,000 × 100 cells
+and beyond. No runtime dependencies besides React.
 
 ## Install
 
@@ -51,6 +53,7 @@ under the `xg-` class prefix and must be imported once per app.
 | `rowHeight`       | `number`                         | `24`    | Row height in px                                   |
 | `defaultColWidth` | `number`                         | `100`   | Default column width in px                         |
 | `className`       | `string`                         | —       | Extra class on the root element                    |
+| `toolbar`         | `boolean`                        | `true`  | Show the formatting toolbar above the formula bar  |
 
 ## Ref API (`ExcelGridHandle`)
 
@@ -69,6 +72,7 @@ under the `xg-` class prefix and must be imported once per app.
 - **Undo/redo**: Ctrl/Cmd+Z, Ctrl/Cmd+Y or Shift+Ctrl/Cmd+Z.
 - **Resize**: drag a column header's right edge.
 - **Fill**: drag the square handle at the selection corner down or right.
+- **Format**: toolbar applies bold/italic/underline/strikethrough, font size, text/fill colors, alignment, percent/thousands formats and decimal places to the selection; 清除格式 clears styling; Σ writes `=SUM(…)` below each selected column. Every action is one undo step.
 
 ## Formulas
 
@@ -93,5 +97,6 @@ npm run build      # dist/ (ESM + CJS + d.ts + styles.css)
 
 ## Not (yet) included
 
-Cell formatting, merged cells, frozen panes, row resize, sorting/filtering,
-multi-sheet workbooks, `.xlsx` import/export, touch gestures.
+Merged cells, borders, format painter, font family, frozen panes, row resize,
+sorting/filtering, multi-sheet workbooks, `.xlsx` import/export, touch
+gestures. Cell styles are display-only and not exposed through `getData()`.
