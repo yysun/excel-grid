@@ -4,10 +4,10 @@
 // text & fill color palettes, horizontal + vertical alignment, text wrap,
 // sort asc/desc, value-filter toggle, freeze-panes popover, and quick SUM —
 // all operating on the current selection via GridStore, with pressed states
-// derived from the active cell's style. Chinese tooltips, inline SVG icons,
+// derived from the active cell's style. English tooltips, inline SVG icons,
 // no external dependencies. mousedown is prevented so grid focus is kept.
-// Recent changes: added vertical alignment, wrap, sort, filter, and freeze
-// controls (toolbar-align-wrap-sort-freeze story).
+// Recent changes: all tooltips and freeze-menu labels switched from Chinese
+// to English.
 
 import { useEffect, useRef, useState } from "react";
 import type { GridStore, RawChange, SortDir } from "../state/GridStore";
@@ -195,18 +195,18 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
       className="xg-toolbar"
       onMouseDown={(e) => e.preventDefault()}
     >
-      {btn("撤销", { disabled: !store.canUndo(), onClick: () => store.undo() }, <IconUndo />)}
-      {btn("重做", { disabled: !store.canRedo(), onClick: () => store.redo() }, <IconRedo />)}
+      {btn("Undo", { disabled: !store.canUndo(), onClick: () => store.undo() }, <IconUndo />)}
+      {btn("Redo", { disabled: !store.canRedo(), onClick: () => store.redo() }, <IconRedo />)}
       <span className="xg-tb-sep" />
-      {btn("清除格式", { onClick: () => store.clearFormat(selRange) }, <IconEraser />)}
+      {btn("Clear formatting", { onClick: () => store.clearFormat(selRange) }, <IconEraser />)}
       <span className="xg-tb-sep" />
-      {btn("百分比格式", { on: activeStyle.numFmt === "percent", onClick: () => toggleFmt("percent") }, "%")}
-      {btn("千位分隔符", { on: activeStyle.numFmt === "thousands", onClick: () => toggleFmt("thousands") }, ",")}
-      {btn("增加小数位数", { onClick: () => bumpDecimals(1), className: "xg-tb-btn--sm" }, ".00+")}
-      {btn("减少小数位数", { onClick: () => bumpDecimals(-1), className: "xg-tb-btn--sm" }, ".0-")}
+      {btn("Percent format", { on: activeStyle.numFmt === "percent", onClick: () => toggleFmt("percent") }, "%")}
+      {btn("Thousands separator", { on: activeStyle.numFmt === "thousands", onClick: () => toggleFmt("thousands") }, ",")}
+      {btn("Increase decimal places", { onClick: () => bumpDecimals(1), className: "xg-tb-btn--sm" }, ".00+")}
+      {btn("Decrease decimal places", { onClick: () => bumpDecimals(-1), className: "xg-tb-btn--sm" }, ".0-")}
       <span className="xg-tb-sep" />
       <div className="xg-tb-group">
-        {btn("字号", { on: open === "size", onClick: () => setOpen(open === "size" ? null : "size") }, (
+        {btn("Font size", { on: open === "size", onClick: () => setOpen(open === "size" ? null : "size") }, (
           <>
             {activeStyle.fontSize ?? 13}
             <IconCaret />
@@ -231,13 +231,13 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
         )}
       </div>
       <span className="xg-tb-sep" />
-      {btn("加粗", { on: !!activeStyle.bold, onClick: () => toggleFlag("bold"), className: "xg-tb-b" }, "B")}
-      {btn("斜体", { on: !!activeStyle.italic, onClick: () => toggleFlag("italic"), className: "xg-tb-i" }, "I")}
-      {btn("下划线", { on: !!activeStyle.underline, onClick: () => toggleFlag("underline"), className: "xg-tb-u" }, "U")}
-      {btn("删除线", { on: !!activeStyle.strike, onClick: () => toggleFlag("strike"), className: "xg-tb-s" }, "S")}
+      {btn("Bold", { on: !!activeStyle.bold, onClick: () => toggleFlag("bold"), className: "xg-tb-b" }, "B")}
+      {btn("Italic", { on: !!activeStyle.italic, onClick: () => toggleFlag("italic"), className: "xg-tb-i" }, "I")}
+      {btn("Underline", { on: !!activeStyle.underline, onClick: () => toggleFlag("underline"), className: "xg-tb-u" }, "U")}
+      {btn("Strikethrough", { on: !!activeStyle.strike, onClick: () => toggleFlag("strike"), className: "xg-tb-s" }, "S")}
       <span className="xg-tb-sep" />
       <div className="xg-tb-group">
-        {btn("文字颜色", { on: open === "color", onClick: () => setOpen(open === "color" ? null : "color") }, (
+        {btn("Text color", { on: open === "color", onClick: () => setOpen(open === "color" ? null : "color") }, (
           <span className="xg-tb-A">
             A
             <span
@@ -249,7 +249,7 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
         {open === "color" && palette("color")}
       </div>
       <div className="xg-tb-group">
-        {btn("填充颜色", { on: open === "fill", onClick: () => setOpen(open === "fill" ? null : "fill") }, (
+        {btn("Fill color", { on: open === "fill", onClick: () => setOpen(open === "fill" ? null : "fill") }, (
           <span className="xg-tb-A">
             <IconBucket />
             <span
@@ -261,20 +261,20 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
         {open === "fill" && palette("background")}
       </div>
       <span className="xg-tb-sep" />
-      {btn("左对齐", { on: activeStyle.align === "left", onClick: () => setAlign("left") }, <IconAlign kind="left" />)}
-      {btn("居中对齐", { on: activeStyle.align === "center", onClick: () => setAlign("center") }, <IconAlign kind="center" />)}
-      {btn("右对齐", { on: activeStyle.align === "right", onClick: () => setAlign("right") }, <IconAlign kind="right" />)}
+      {btn("Align left", { on: activeStyle.align === "left", onClick: () => setAlign("left") }, <IconAlign kind="left" />)}
+      {btn("Align center", { on: activeStyle.align === "center", onClick: () => setAlign("center") }, <IconAlign kind="center" />)}
+      {btn("Align right", { on: activeStyle.align === "right", onClick: () => setAlign("right") }, <IconAlign kind="right" />)}
       <span className="xg-tb-sep" />
-      {btn("顶端对齐", { on: activeStyle.valign === "top", onClick: () => setVAlign("top") }, <IconVAlign kind="top" />)}
-      {btn("垂直居中", { on: activeStyle.valign === "middle", onClick: () => setVAlign("middle") }, <IconVAlign kind="middle" />)}
-      {btn("底端对齐", { on: activeStyle.valign === "bottom", onClick: () => setVAlign("bottom") }, <IconVAlign kind="bottom" />)}
-      {btn("自动换行", { on: !!activeStyle.wrap, onClick: toggleWrap }, <IconWrap />)}
+      {btn("Align top", { on: activeStyle.valign === "top", onClick: () => setVAlign("top") }, <IconVAlign kind="top" />)}
+      {btn("Align middle", { on: activeStyle.valign === "middle", onClick: () => setVAlign("middle") }, <IconVAlign kind="middle" />)}
+      {btn("Align bottom", { on: activeStyle.valign === "bottom", onClick: () => setVAlign("bottom") }, <IconVAlign kind="bottom" />)}
+      {btn("Wrap text", { on: !!activeStyle.wrap, onClick: toggleWrap }, <IconWrap />)}
       <span className="xg-tb-sep" />
-      {btn("升序排序", { disabled: !canSort, onClick: () => sort("asc") }, <IconSort dir="asc" />)}
-      {btn("降序排序", { disabled: !canSort, onClick: () => sort("desc") }, <IconSort dir="desc" />)}
-      {btn("筛选", { on: store.hasFilter(), onClick: toggleFilter }, <IconFilter />)}
+      {btn("Sort ascending", { disabled: !canSort, onClick: () => sort("asc") }, <IconSort dir="asc" />)}
+      {btn("Sort descending", { disabled: !canSort, onClick: () => sort("desc") }, <IconSort dir="desc" />)}
+      {btn("Filter", { on: store.hasFilter(), onClick: toggleFilter }, <IconFilter />)}
       <div className="xg-tb-group">
-        {btn("冻结", { on: open === "freeze" || frozen, onClick: () => setOpen(open === "freeze" ? null : "freeze") }, (
+        {btn("Freeze panes", { on: open === "freeze" || frozen, onClick: () => setOpen(open === "freeze" ? null : "freeze") }, (
           <>
             <IconFreeze />
             <IconCaret />
@@ -287,14 +287,14 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
               className="xg-tb-menu-item"
               onClick={() => freezeAction(() => store.setFrozenRows(selRange.endRow + 1))}
             >
-              冻结至第 {selRange.endRow + 1} 行
+              Freeze up to row {selRange.endRow + 1}
             </button>
             <button
               type="button"
               className="xg-tb-menu-item"
               onClick={() => freezeAction(() => store.setFrozenCols(selRange.endCol + 1))}
             >
-              冻结至第 {colToLetters(selRange.endCol)} 列
+              Freeze up to column {colToLetters(selRange.endCol)}
             </button>
             <button
               type="button"
@@ -307,13 +307,13 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
                 })
               }
             >
-              取消冻结
+              Unfreeze
             </button>
           </div>
         )}
       </div>
       <span className="xg-tb-sep" />
-      {btn("求和", { onClick: quickSum, className: "xg-tb-sum" }, "Σ")}
+      {btn("Sum", { onClick: quickSum, className: "xg-tb-sum" }, "Σ")}
     </div>
   );
 }

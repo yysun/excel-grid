@@ -13,7 +13,7 @@ the toolbar, as in Excel Web and WeCom sheets.
 
 Extend the toolbar with the following controls, all operating on the current
 selection / active cell and consistent with existing toolbar behavior
-(Chinese tooltips, pressed states from the active cell, focus kept on the
+(English tooltips, pressed states from the active cell, focus kept on the
 grid):
 
 1. **Vertical alignment**: three toggle buttons (top / middle / bottom) that
@@ -39,7 +39,7 @@ grid):
    Button shows a pressed state while any rows or columns are frozen.
 
 Vertical alignment and wrap must participate in the existing style layer:
-undoable, cleared by "清除格式" (clear format), persisted per cell
+undoable, cleared by "Clear formatting", persisted per cell
 independent of value.
 
 ## Acceptance Criteria
@@ -67,7 +67,7 @@ independent of value.
 
 ## Constraints
 
-- Follow existing toolbar conventions: Chinese tooltips, inline SVG icons,
+- Follow existing toolbar conventions: English tooltips, inline SVG icons,
   no external dependencies, `mousedown` prevented to keep grid focus,
   popovers close on outside mousedown.
 - Sorting/filter/freeze must reuse the existing `GridStore` APIs

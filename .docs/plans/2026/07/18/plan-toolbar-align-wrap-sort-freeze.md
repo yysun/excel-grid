@@ -76,29 +76,29 @@ freeze-pane controls; vertical alignment and wrap become first-class
 ### Phase 2 - Toolbar controls
 
 - [x] In `src/components/Toolbar.tsx`, add a `setVAlign(v)` handler (toggle
-      semantics like `setAlign`) and three buttons (顶端对齐 / 垂直居中 /
-      底端对齐) with new `IconVAlign` SVG icons, pressed from
+      semantics like `setAlign`) and three buttons (Align top / Align middle /
+      Align bottom) with new `IconVAlign` SVG icons, pressed from
       `activeStyle.valign`.
-- [x] Add a wrap toggle button (自动换行) with an `IconWrap` SVG icon,
+- [x] Add a wrap toggle button (Wrap text) with an `IconWrap` SVG icon,
       pressed from `activeStyle.wrap`, applying `{ wrap: true | undefined }`.
-- [x] Add sort ascending/descending buttons (升序 / 降序) with icons:
+- [x] Add sort ascending/descending buttons (Sort ascending / Sort descending) with icons:
       multi-cell selection → `store.sortRange(selRange, selRange.startCol,
       dir)`; single cell → `store.sortRange(used, active.col, dir)` with
       `used = store.getUsedRange()`, no-op when null. Disable both buttons
       for a multi-cell selection that spans a single row (`sortRange`
       early-returns there; the context menu disables sort in that case —
       stay consistent).
-- [x] Add the filter toggle button (筛选) with an icon: `store.hasFilter()`
+- [x] Add the filter toggle button (Filter) with an icon: `store.hasFilter()`
       ? `store.clearFilter()` : `store.filterByValue(active.col,
       active.row)`; pressed while `hasFilter()`.
 - [x] Add the freeze popover: extend the `Popover` union with `"freeze"`,
-      button (冻结) pressed while `getFrozenRows() > 0 || getFrozenCols() >
-      0`, popover items "冻结至第 N 行" (`setFrozenRows(selRange.endRow +
-      1)`, N = `selRange.endRow + 1`) and "冻结至第 X 列"
+      button (Freeze panes) pressed while `getFrozenRows() > 0 || getFrozenCols() >
+      0`, popover items "Freeze up to row N" (`setFrozenRows(selRange.endRow +
+      1)`, N = `selRange.endRow + 1`) and "Freeze up to column X"
       (`setFrozenCols(selRange.endCol + 1)`, X =
       `colToLetters(selRange.endCol)` — the context menu uses column
       letters), and
-      "取消冻结" (both to 0, disabled when nothing frozen); close popover on
+      "Unfreeze" (both to 0, disabled when nothing frozen); close popover on
       action.
 - [x] Add any needed popover/menu CSS for the freeze list to
       `src/styles.css`, reusing `.xg-tb-pop` patterns.
