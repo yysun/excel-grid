@@ -9,9 +9,9 @@
 // context menus (cell / row header / column header) driving insert/delete/
 // move/hide/freeze/sort/filter/clipboard, and frozen panes rendered as
 // transform-synced overlay panes.
-// Recent changes: context-menus story — row metrics replace uniform row
-// math, hidden lines render zero-size, frozen panes + pinned header layers,
-// header drag selection, ContextMenu wiring, shared clipboard helpers.
+// Recent changes: cellStyleCss renders valign (alignItems), wrap
+// (whiteSpace/wordBreak), and textAlign so wrapped text keeps its
+// horizontal alignment.
 
 import {
   forwardRef,
@@ -31,6 +31,7 @@ import type {
   ExcelGridHandle,
   ExcelGridProps,
   HAlign,
+  VAlign,
 } from "../types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Toolbar } from "./Toolbar";
@@ -1286,6 +1287,12 @@ const JUSTIFY: Record<HAlign, React.CSSProperties["justifyContent"]> = {
   right: "flex-end",
 };
 
+const ALIGN_ITEMS: Record<VAlign, React.CSSProperties["alignItems"]> = {
+  top: "flex-start",
+  middle: "center",
+  bottom: "flex-end",
+};
+
 /** Inline CSS for a cell's CellStyle (merged after positional styles). */
 function cellStyleCss(cs: CellStyle): React.CSSProperties {
   const deco = [cs.underline && "underline", cs.strike && "line-through"]
@@ -1299,6 +1306,12 @@ function cellStyleCss(cs: CellStyle): React.CSSProperties {
     color: cs.color,
     background: cs.background,
     justifyContent: cs.align ? JUSTIFY[cs.align] : undefined,
+    // textAlign too: justifyContent cannot place the line boxes of wrapped
+    // text, only the (full-width) anonymous flex item.
+    textAlign: cs.align,
+    alignItems: cs.valign ? ALIGN_ITEMS[cs.valign] : undefined,
+    whiteSpace: cs.wrap ? "normal" : undefined,
+    wordBreak: cs.wrap ? "break-word" : undefined,
   };
 }
 

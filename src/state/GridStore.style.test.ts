@@ -1,6 +1,7 @@
 // Tests for the GridStore style layer: applyStyle merge/removal semantics,
 // clearFormat, undo/redo integration with raw edits, number-format display
-// (percent/thousands/decimals), and the style-cell cap.
+// (percent/thousands/decimals), the style-cell cap, and the valign/wrap
+// keys added for the toolbar vertical-alignment and wrap buttons.
 
 import { describe, expect, it } from "vitest";
 import { GridStore, STYLE_CELL_CAP } from "./GridStore";
@@ -65,6 +66,30 @@ describe("applyStyle", () => {
     expect(store.getStyle(0, 0)).toBeNull();
     expect(store.canUndo()).toBe(false);
   });
+
+  it("merges valign and wrap with other keys and removes them via undefined", () => {
+    const store = makeStore();
+    store.applyStyle(cell(0, 0), { bold: true });
+    store.applyStyle(cell(0, 0), { valign: "top", wrap: true });
+    expect(store.getStyle(0, 0)).toEqual({ bold: true, valign: "top", wrap: true });
+    store.applyStyle(cell(0, 0), { valign: "bottom" });
+    expect(store.getStyle(0, 0)).toEqual({ bold: true, valign: "bottom", wrap: true });
+    store.applyStyle(cell(0, 0), { valign: undefined, wrap: undefined });
+    expect(store.getStyle(0, 0)).toEqual({ bold: true });
+  });
+
+  it("undoes and redoes valign/wrap changes", () => {
+    const store = makeStore();
+    store.applyStyle(cell(0, 0), { valign: "top" });
+    store.applyStyle(cell(0, 0), { wrap: true });
+    store.undo();
+    expect(store.getStyle(0, 0)).toEqual({ valign: "top" });
+    store.undo();
+    expect(store.getStyle(0, 0)).toBeNull();
+    store.redo();
+    store.redo();
+    expect(store.getStyle(0, 0)).toEqual({ valign: "top", wrap: true });
+  });
 });
 
 describe("clearFormat", () => {
@@ -85,6 +110,13 @@ describe("clearFormat", () => {
     store.applyStyle(cell(9, 9), { bold: true });
     store.clearFormat(range(0, 0, 2, 2));
     expect(store.getStyle(9, 9)).toEqual({ bold: true });
+  });
+
+  it("removes valign and wrap", () => {
+    const store = makeStore();
+    store.applyStyle(cell(0, 0), { valign: "bottom", wrap: true });
+    store.clearFormat(cell(0, 0));
+    expect(store.getStyle(0, 0)).toBeNull();
   });
 });
 

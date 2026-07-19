@@ -1,8 +1,7 @@
 /* excel-grid library styles. All selectors are namespaced under .xg- so
    nothing leaks into consuming applications. Ships as dist/styles.css.
-   Recent changes: added the context-menu layer — .xg-menu* (right-click
-   menu), .xg-bodywrap + .xg-pane* (frozen panes), and .xg-header-frozen
-   (pinned header portions). */
+   Recent changes: added .xg-tb-menu* (freeze-panes toolbar popover) and
+   text-align:right on .xg-cell--num so wrapped numbers stay right-aligned. */
 
 .xg-root {
   display: flex;
@@ -181,6 +180,36 @@
 .xg-tb-size-item--on {
   background: #e8f1fb;
   color: #1a73e8;
+}
+
+/* Freeze-panes popover: a small vertical action menu. */
+.xg-tb-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  padding: 4px;
+}
+
+.xg-tb-menu-item {
+  border: none;
+  background: transparent;
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: #3a3f45;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.xg-tb-menu-item:hover:not(:disabled) {
+  background: #f2f3f5;
+}
+
+.xg-tb-menu-item:disabled {
+  color: #c0c4cb;
+  cursor: default;
 }
 
 /* Formula bar */
@@ -408,6 +437,9 @@
 
 .xg-cell--num {
   justify-content: flex-end;
+  /* Wrapped text ignores justify-content (the anonymous flex item is
+     full-width); text-align keeps the line boxes right-aligned. */
+  text-align: right;
 }
 
 .xg-cell--err {

@@ -2,7 +2,8 @@
 // Features: exports the ExcelGrid component, its prop/handle/data types, and
 // A1-reference helpers useful to consumers. Importing this module also pulls
 // in the namespaced stylesheet (bundled to dist/styles.css).
-// Recent changes: exported CellStyle/NumFmt/HAlign for the toolbar feature.
+// Recent changes: exported VAlign for the toolbar vertical-alignment/wrap
+// feature.
 
 import "./styles.css";
 
@@ -18,6 +19,7 @@ export type {
   GridChange,
   HAlign,
   NumFmt,
+  VAlign,
 } from "./types";
 export {
   colToLetters,

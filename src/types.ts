@@ -1,10 +1,10 @@
 // Shared public + internal types for the excel-grid library.
 // Features: cell/coord/range models, change events, cell style model
-// (bold/italic/underline/strike, font size, colors, alignment, number
-// formats), component props and imperative handle types re-exported from
-// src/index.ts.
-// Recent changes: added CellStyle/NumFmt/HAlign and the toolbar prop for the
-// WeCom-style toolbar.
+// (bold/italic/underline/strike, font size, colors, alignment, wrapping,
+// number formats), component props and imperative handle types re-exported
+// from src/index.ts.
+// Recent changes: added VAlign plus CellStyle.valign/wrap for the toolbar
+// vertical-alignment and text-wrapping buttons.
 
 /** A computed scalar value a cell can hold. */
 export type CellValue = string | number | boolean | null;
@@ -39,6 +39,9 @@ export type NumFmt = "general" | "percent" | "thousands";
 /** Horizontal cell alignment. */
 export type HAlign = "left" | "center" | "right";
 
+/** Vertical cell alignment. */
+export type VAlign = "top" | "middle" | "bottom";
+
 /**
  * Visual style of one cell, stored sparsely and independent of the cell's
  * value (an empty cell can carry a fill color). All fields optional; an
@@ -56,6 +59,9 @@ export interface CellStyle {
   /** Fill / background color (CSS color). */
   background?: string;
   align?: HAlign;
+  valign?: VAlign;
+  /** Word-wrap the cell text within the row height. */
+  wrap?: boolean;
   numFmt?: NumFmt;
   /** Fixed decimal places for numeric display (0-10). */
   decimals?: number;
