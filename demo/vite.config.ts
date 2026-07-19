@@ -10,5 +10,6 @@ const demoRoot = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   root: demoRoot,
   plugins: [react()],
-  server: { port: 5199 },
+  // Prefer PORT from the environment (assigned by tooling); 5199 otherwise.
+  server: { port: Number(process.env.PORT) || 5199 },
 });
