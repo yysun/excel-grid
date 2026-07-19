@@ -1,9 +1,8 @@
 /* excel-grid library styles. All selectors are namespaced under .xg- so
    nothing leaks into consuming applications. Ships as dist/styles.css.
-   Recent changes: added .xg-header-filter (always-visible column filter
-   button; --on when the filter excludes values) and the .xg-filter-pop*
-   value-picker popup styles; the hover sort button shifts left on
-   .xg-header-cell--filter so the two don't overlap. */
+   Recent changes: added .xg-tb-fmt-item/-check/-example for the toolbar
+   "More formats" dropdown rows (check column, label, right-aligned
+   example), layered on the existing .xg-tb-menu popover styles. */
 
 .xg-root {
   display: flex;
@@ -212,6 +211,28 @@
 .xg-tb-menu-item:disabled {
   color: #c0c4cb;
   cursor: default;
+}
+
+/* "More formats" dropdown rows: check column, name, right-aligned example. */
+.xg-tb-fmt-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 170px;
+}
+
+.xg-tb-fmt-check {
+  width: 12px;
+  flex: none;
+  text-align: center;
+  color: #1a73e8;
+}
+
+.xg-tb-fmt-example {
+  margin-left: auto;
+  padding-left: 16px;
+  color: #8a9099;
+  font-size: 11px;
 }
 
 /* Formula bar */

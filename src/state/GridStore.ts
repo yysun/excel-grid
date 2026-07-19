@@ -10,10 +10,10 @@
 // columns showing a filter button, colFilters = allowed value keys per
 // column, filteredRows derived on notify), frozen pane counts (view state,
 // not undoable), range sorting, and used-range computation.
-// Recent changes: replaced the single filterByValue filter with the
-// per-column value-set filter model (setFilterCols/setColFilter/
-// getColumnValues + filterValueKey); filterCols/colFilters ride in
-// SheetSnapshot so structural undo keeps them on the right columns.
+// Recent changes: formatNumber gained "number" (grouped, 2-decimal
+// default), "currency" ($-prefixed with the sign before the $), and
+// "scientific" (uppercase exponent) renderings for the toolbar format
+// dropdown; decimals still overrides each format's default digit count.
 
 import { FormulaError, type ErrorCode } from "../formula/errors";
 import { evaluate, type EvalContext } from "../formula/evaluate";
@@ -981,9 +981,25 @@ export function formatNumber(v: number, style: CellStyle): string {
           ? { maximumFractionDigits: 10 }
           : { minimumFractionDigits: d, maximumFractionDigits: d }
       );
+    case "number":
+      return groupedFixed(v, d ?? 2);
+    case "currency":
+      return v < 0
+        ? "-$" + groupedFixed(-v, d ?? 2)
+        : "$" + groupedFixed(v, d ?? 2);
+    case "scientific":
+      return v.toExponential(d ?? 2).toUpperCase();
     default:
       return d === undefined ? String(v) : v.toFixed(d);
   }
+}
+
+/** en-US grouped rendering with a fixed fraction-digit count. */
+function groupedFixed(v: number, digits: number): string {
+  return v.toLocaleString("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
 }
 
 /** Parse non-formula raw text into a value: number, boolean, or string. */

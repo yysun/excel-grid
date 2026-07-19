@@ -6,9 +6,11 @@
 // on the current selection via GridStore, with pressed states derived from
 // the active cell's style. English tooltips, inline SVG icons, no external
 // dependencies. mousedown is prevented so grid focus is kept.
-// Recent changes: the Filter button now toggles Excel-style filter mode —
-// on: enables filter buttons on the selected columns (setFilterCols);
-// off: clears all filter buttons and filters (clearFilterCols).
+// Recent changes: added a Google Sheets-style "123" format dropdown
+// (Automatic / Number / Percent / Scientific / Currency with example
+// output and a check on the active format); Automatic clears numFmt +
+// decimals in one undoable patch; bumpDecimals now starts from the active
+// format's default digit count so "increase" never lowers it.
 
 import { useEffect, useRef, useState } from "react";
 import type { GridStore, RawChange } from "../state/GridStore";
@@ -30,7 +32,27 @@ const PALETTE = [
   "#f4cccc", "#fce5cd", "#fff2cc", "#d9ead3", "#d0e0e3", "#cfe2f3", "#d9d2e9", "#ead1dc",
 ];
 
-type Popover = "size" | "color" | "fill" | "freeze" | null;
+type Popover = "fmt" | "size" | "color" | "fill" | "freeze" | null;
+
+/** Rows of the "More formats" dropdown; fmt undefined = Automatic. */
+const FORMAT_ITEMS: Array<{
+  fmt: NumFmt | undefined;
+  label: string;
+  example?: string;
+}> = [
+  { fmt: undefined, label: "Automatic" },
+  { fmt: "number", label: "Number", example: "1,000.12" },
+  { fmt: "percent", label: "Percent", example: "10.12%" },
+  { fmt: "scientific", label: "Scientific", example: "1.01E+3" },
+  { fmt: "currency", label: "Currency", example: "$1,000.12" },
+];
+
+/** Formats whose default display uses 2 fraction digits. */
+const FMT_DEFAULT_DECIMALS: Partial<Record<NumFmt, number>> = {
+  number: 2,
+  currency: 2,
+  scientific: 2,
+};
 
 interface ToolbarProps {
   store: GridStore;
@@ -101,8 +123,21 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
   };
 
   const bumpDecimals = (delta: number) => {
-    const next = Math.min(10, Math.max(0, (activeStyle.decimals ?? 0) + delta));
+    const base =
+      activeStyle.decimals ??
+      (activeStyle.numFmt ? FMT_DEFAULT_DECIMALS[activeStyle.numFmt] ?? 0 : 0);
+    const next = Math.min(10, Math.max(0, base + delta));
     store.applyStyle(selRange, { decimals: next });
+  };
+
+  const applyFmt = (fmt: NumFmt | undefined) => {
+    store.applyStyle(
+      selRange,
+      fmt === undefined
+        ? { numFmt: undefined, decimals: undefined }
+        : { numFmt: fmt }
+    );
+    setOpen(null);
   };
 
   const applyColor = (key: "color" | "background", value?: string) => {
@@ -190,6 +225,39 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
       <span className="xg-tb-sep" />
       {btn("Clear formatting", { onClick: () => store.clearFormat(selRange) }, <IconEraser />)}
       <span className="xg-tb-sep" />
+      <div className="xg-tb-group">
+        {btn("More formats", { on: open === "fmt", onClick: () => setOpen(open === "fmt" ? null : "fmt") }, (
+          <>
+            123
+            <IconCaret />
+          </>
+        ))}
+        {open === "fmt" && (
+          <div className="xg-tb-pop xg-tb-menu">
+            {FORMAT_ITEMS.map((item) => {
+              // A stored "general" means no effective format, i.e. Automatic.
+              const current =
+                activeStyle.numFmt === "general" ? undefined : activeStyle.numFmt;
+              return (
+                <button
+                  key={item.label}
+                  type="button"
+                  className="xg-tb-menu-item xg-tb-fmt-item"
+                  onClick={() => applyFmt(item.fmt)}
+                >
+                  <span className="xg-tb-fmt-check">
+                    {current === item.fmt ? "✓" : ""}
+                  </span>
+                  <span>{item.label}</span>
+                  {item.example && (
+                    <span className="xg-tb-fmt-example">{item.example}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
       {btn("Percent format", { on: activeStyle.numFmt === "percent", onClick: () => toggleFmt("percent") }, "%")}
       {btn("Thousands separator", { on: activeStyle.numFmt === "thousands", onClick: () => toggleFmt("thousands") }, ",")}
       {btn("Increase decimal places", { onClick: () => bumpDecimals(1), className: "xg-tb-btn--sm" }, ".00+")}

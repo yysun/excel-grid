@@ -1,7 +1,8 @@
 // Tests for the GridStore style layer: applyStyle merge/removal semantics,
 // clearFormat, undo/redo integration with raw edits, number-format display
-// (percent/thousands/decimals), the style-cell cap, and the valign/wrap
-// keys added for the toolbar vertical-alignment and wrap buttons.
+// (percent/thousands/decimals plus the dropdown's number/currency/
+// scientific formats), the style-cell cap, and the valign/wrap keys added
+// for the toolbar vertical-alignment and wrap buttons.
 
 import { describe, expect, it } from "vitest";
 import { GridStore, STYLE_CELL_CAP } from "./GridStore";
@@ -179,6 +180,60 @@ describe("number formats in getDisplay", () => {
     store.setCells([{ row: 0, col: 0, raw: "4.666" }]);
     store.applyStyle(cell(0, 0), { decimals: 2 });
     expect(store.getDisplay(0, 0)).toBe("4.67");
+  });
+
+  it("formats number with grouped 2-decimal default and decimals override", () => {
+    const store = makeStore();
+    store.setCells([{ row: 0, col: 0, raw: "1234.5" }]);
+    store.applyStyle(cell(0, 0), { numFmt: "number" });
+    expect(store.getDisplay(0, 0)).toBe("1,234.50");
+    store.applyStyle(cell(0, 0), { decimals: 0 });
+    expect(store.getDisplay(0, 0)).toBe("1,235");
+    store.applyStyle(cell(0, 0), { decimals: 3 });
+    expect(store.getDisplay(0, 0)).toBe("1,234.500");
+  });
+
+  it("formats currency with the sign before the $", () => {
+    const store = makeStore();
+    store.setCells([
+      { row: 0, col: 0, raw: "1234.5" },
+      { row: 1, col: 0, raw: "-1234.5" },
+    ]);
+    store.applyStyle(range(0, 0, 1, 0), { numFmt: "currency" });
+    expect(store.getDisplay(0, 0)).toBe("$1,234.50");
+    expect(store.getDisplay(1, 0)).toBe("-$1,234.50");
+    store.applyStyle(range(0, 0, 1, 0), { decimals: 0 });
+    expect(store.getDisplay(0, 0)).toBe("$1,235");
+    expect(store.getDisplay(1, 0)).toBe("-$1,235");
+  });
+
+  it("formats scientific with an uppercase exponent", () => {
+    const store = makeStore();
+    store.setCells([{ row: 0, col: 0, raw: "1234.5" }]);
+    store.applyStyle(cell(0, 0), { numFmt: "scientific" });
+    expect(store.getDisplay(0, 0)).toBe("1.23E+3");
+    store.applyStyle(cell(0, 0), { decimals: 4 });
+    expect(store.getDisplay(0, 0)).toBe("1.2345E+3");
+    store.setCells([{ row: 0, col: 0, raw: "0.00042" }]);
+    store.applyStyle(cell(0, 0), { decimals: undefined });
+    expect(store.getDisplay(0, 0)).toBe("4.20E-4");
+  });
+
+  it("leaves text cells unchanged when a new format is applied", () => {
+    const store = makeStore();
+    store.setCells([{ row: 0, col: 0, raw: "hello" }]);
+    store.applyStyle(cell(0, 0), { numFmt: "currency" });
+    expect(store.getDisplay(0, 0)).toBe("hello");
+  });
+
+  it("removing numFmt and decimals restores plain display", () => {
+    const store = makeStore();
+    store.setCells([{ row: 0, col: 0, raw: "1234.5" }]);
+    store.applyStyle(cell(0, 0), { numFmt: "currency", decimals: 3 });
+    expect(store.getDisplay(0, 0)).toBe("$1,234.500");
+    store.applyStyle(cell(0, 0), { numFmt: undefined, decimals: undefined });
+    expect(store.getDisplay(0, 0)).toBe("1234.5");
+    expect(store.getStyle(0, 0)).toBeNull();
   });
 
   it("formats formula results but never raw text or errors", () => {

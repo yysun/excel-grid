@@ -3,8 +3,9 @@
 // (bold/italic/underline/strike, font size, colors, alignment, wrapping,
 // number formats), component props and imperative handle types re-exported
 // from src/index.ts.
-// Recent changes: added VAlign plus CellStyle.valign/wrap for the toolbar
-// vertical-alignment and text-wrapping buttons.
+// Recent changes: widened NumFmt with "number" | "currency" | "scientific"
+// for the toolbar "More formats" dropdown (additive; old stored styles
+// keep their meaning).
 
 /** A computed scalar value a cell can hold. */
 export type CellValue = string | number | boolean | null;
@@ -34,7 +35,13 @@ export interface CellData {
 }
 
 /** Number display format applied on top of a numeric cell value. */
-export type NumFmt = "general" | "percent" | "thousands";
+export type NumFmt =
+  | "general"
+  | "percent"
+  | "thousands"
+  | "number"
+  | "currency"
+  | "scientific";
 
 /** Horizontal cell alignment. */
 export type HAlign = "left" | "center" | "right";
