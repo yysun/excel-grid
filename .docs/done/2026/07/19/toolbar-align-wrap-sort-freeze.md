@@ -26,6 +26,21 @@
   during scroll + unfreeze, popover outside-click close, wrapped-number
   right-alignment — all observed via DOM reads and screenshots.
 
+## Scope change (2026-07-19): sort moved to column headers
+
+- Toolbar sort buttons removed: selection-scoped sort silently broke row
+  integrity when only a column was selected (no Excel-style "expand
+  selection" prompt exists).
+- Column headers now show a hover-revealed sort button: sorts the whole
+  used range by that column with rows intact (asc first, repeat click
+  toggles desc, per-column direction memory in UI state only); no-op on an
+  empty or single-row sheet; mousedown is swallowed so the click neither
+  selects the column nor steals grid focus. Range-scoped sort remains in
+  the right-click context menu.
+- Re-verified: typecheck clean, 92/92 tests, build OK; browser E2E covered
+  hover reveal, asc/desc toggle, fresh-column asc, rows-intact sort, no
+  column selection, and undo restore.
+
 ## Notes
 
 - Sort scenario used demo-data city names rather than the spec's literal

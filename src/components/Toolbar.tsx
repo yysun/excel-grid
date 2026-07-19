@@ -2,15 +2,15 @@
 // Features: undo/redo, clear format, percent/thousands/decimal number
 // formats, font-size dropdown, bold/italic/underline/strikethrough toggles,
 // text & fill color palettes, horizontal + vertical alignment, text wrap,
-// sort asc/desc, value-filter toggle, freeze-panes popover, and quick SUM —
-// all operating on the current selection via GridStore, with pressed states
-// derived from the active cell's style. English tooltips, inline SVG icons,
-// no external dependencies. mousedown is prevented so grid focus is kept.
-// Recent changes: all tooltips and freeze-menu labels switched from Chinese
-// to English.
+// value-filter toggle, freeze-panes popover, and quick SUM — all operating
+// on the current selection via GridStore, with pressed states derived from
+// the active cell's style. English tooltips, inline SVG icons, no external
+// dependencies. mousedown is prevented so grid focus is kept.
+// Recent changes: sort buttons moved to the column headers (see
+// ExcelGrid.tsx colHeaderCell); selection-scoped toolbar sort removed.
 
 import { useEffect, useRef, useState } from "react";
-import type { GridStore, RawChange, SortDir } from "../state/GridStore";
+import type { GridStore, RawChange } from "../state/GridStore";
 import type {
   CellCoord,
   CellRange,
@@ -74,22 +74,6 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
 
   const toggleWrap = () => {
     store.applyStyle(selRange, { wrap: activeStyle.wrap ? undefined : true });
-  };
-
-  const isMultiCell =
-    selRange.startRow !== selRange.endRow ||
-    selRange.startCol !== selRange.endCol;
-  // sortRange needs at least two rows; a single-row multi-cell selection
-  // cannot sort (matches the context menu's disabled state).
-  const canSort = !isMultiCell || selRange.startRow !== selRange.endRow;
-
-  const sort = (dir: SortDir) => {
-    if (isMultiCell) {
-      store.sortRange(selRange, selRange.startCol, dir);
-    } else {
-      const used = store.getUsedRange();
-      if (used) store.sortRange(used, active.col, dir);
-    }
   };
 
   const toggleFilter = () => {
@@ -270,8 +254,6 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
       {btn("Align bottom", { on: activeStyle.valign === "bottom", onClick: () => setVAlign("bottom") }, <IconVAlign kind="bottom" />)}
       {btn("Wrap text", { on: !!activeStyle.wrap, onClick: toggleWrap }, <IconWrap />)}
       <span className="xg-tb-sep" />
-      {btn("Sort ascending", { disabled: !canSort, onClick: () => sort("asc") }, <IconSort dir="asc" />)}
-      {btn("Sort descending", { disabled: !canSort, onClick: () => sort("desc") }, <IconSort dir="desc" />)}
       {btn("Filter", { on: store.hasFilter(), onClick: toggleFilter }, <IconFilter />)}
       <div className="xg-tb-group">
         {btn("Freeze panes", { on: open === "freeze" || frozen, onClick: () => setOpen(open === "freeze" ? null : "freeze") }, (
@@ -447,29 +429,6 @@ function IconWrap() {
         strokeLinejoin="round"
       />
       <path d="M3 12.5h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-/** Bars ordered short-to-long (asc) or long-to-short (desc) plus an arrow. */
-function IconSort({ dir }: { dir: SortDir }) {
-  const bars = dir === "asc" ? "M3 4.5h4M3 8h6.5M3 11.5h9" : "M3 4.5h9M3 8h6.5M3 11.5h4";
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <path d={bars} stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      <path
-        d="M13.5 5v6"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="round"
-      />
-      <path
-        d={dir === "asc" ? "m12 6.5 1.5-1.5L15 6.5" : "m12 9.5 1.5 1.5L15 9.5"}
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
     </svg>
   );
 }

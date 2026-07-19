@@ -9,9 +9,9 @@
 // context menus (cell / row header / column header) driving insert/delete/
 // move/hide/freeze/sort/filter/clipboard, and frozen panes rendered as
 // transform-synced overlay panes.
-// Recent changes: cellStyleCss renders valign (alignItems), wrap
-// (whiteSpace/wordBreak), and textAlign so wrapped text keeps its
-// horizontal alignment.
+// Recent changes: column headers gained a hover-revealed sort button that
+// sorts the used range by that column (asc, toggling to desc on repeat
+// clicks), replacing the toolbar's selection-scoped sort buttons.
 
 import {
   forwardRef,
@@ -23,7 +23,7 @@ import {
   useState,
 } from "react";
 import { adjustFormula } from "../formula/adjust";
-import { GridStore, type RawChange } from "../state/GridStore";
+import { GridStore, type RawChange, type SortDir } from "../state/GridStore";
 import type {
   CellCoord,
   CellRange,
@@ -968,6 +968,19 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       return out;
     };
 
+    // Last sort direction per column header button; a fresh column sorts
+    // ascending, a repeat click toggles. UI nicety only — not sheet state.
+    const headerSortDirRef = useRef(new Map<number, SortDir>());
+
+    const headerSort = (col: number) => {
+      const used = store.getUsedRange();
+      if (!used || used.startRow === used.endRow) return;
+      const dir: SortDir =
+        headerSortDirRef.current.get(col) === "asc" ? "desc" : "asc";
+      headerSortDirRef.current.set(col, dir);
+      store.sortRange(used, col, dir);
+    };
+
     const colHeaderCell = (col: number): React.ReactNode => {
       if (colWidths[col] === 0) return null;
       const inSel = col >= selRange.startCol && col <= selRange.endCol;
@@ -990,6 +1003,26 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
           onContextMenu={(e) => handleHeaderContextMenu("col", col, e)}
         >
           {colToLetters(col)}
+          <button
+            type="button"
+            className="xg-header-sort"
+            title={`Sort by column ${colToLetters(col)}`}
+            onMouseDown={(e) => {
+              e.preventDefault(); // Keep keyboard focus on the grid body.
+              e.stopPropagation(); // Don't start the column-select drag.
+            }}
+            onClick={() => headerSort(col)}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
+              <path
+                d="M3 4 5 2l2 2M3 6l2 2 2-2"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
           <div
             className="xg-resize-grip"
             onMouseDown={(e) => beginResizeDrag(e, col)}

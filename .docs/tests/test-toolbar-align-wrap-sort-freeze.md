@@ -31,24 +31,25 @@ Run against the demo app (`npm run dev`, default Vite port). Grid defaults:
 Note: at the default 24px row height a two-line wrap is clipped; verify via
 DOM reads (line boxes / scrollHeight) or after making the row taller.
 
-## Scenario 3 — Sorting
+## Scenario 3 — Sorting (column-header buttons)
 
-1. Enter in A1:A4 the values `3`, `1`, `2`, `banana`; in B1:B4 enter
+1. Verify the toolbar contains no sort buttons.
+2. Enter in A1:A4 the values `3`, `1`, `2`, `banana`; in B1:B4 enter
    `c`, `a`, `b`, `d`.
-2. Select range A1:B4. Click Sort ascending.
-   - Expect: rows reorder by column A ascending — numbers first (1, 2, 3),
-     text after (banana); B column moves with its rows (a, b, c, d order
-     follows A).
-3. Click Sort descending with the same selection.
-   - Expect: reverse order, blanks (if any) last.
-4. Select only cell A2 (single cell). Click Sort ascending.
-   - Expect: the whole used range sorts by column A (same as header context
-     menu behavior).
-5. Press Ctrl/Cmd+Z.
-   - Expect: sort is undone (values return).
-6. Select the single-row range A1:B1.
-   - Expect: both sort buttons are disabled (consistent with the context
-     menu, which disables sort for single-row ranges).
+3. Hover column header A.
+   - Expect: a small sort button appears in the header (hidden when not
+     hovered); hovering it does not select the column.
+4. Click the header-A sort button.
+   - Expect: the whole used range sorts by column A ascending — numbers
+     first (1, 2, 3), text after (banana); B values move with their rows.
+     The column is not selected by the click.
+5. Click the header-A sort button again.
+   - Expect: descending order (direction toggles on repeat click).
+6. Click the header-B sort button.
+   - Expect: used range sorts by column B ascending (a fresh column starts
+     at ascending).
+7. Press Ctrl/Cmd+Z.
+   - Expect: the last sort is undone.
 
 ## Scenario 4 — Filtering
 

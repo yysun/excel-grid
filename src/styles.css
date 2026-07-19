@@ -1,7 +1,7 @@
 /* excel-grid library styles. All selectors are namespaced under .xg- so
    nothing leaks into consuming applications. Ships as dist/styles.css.
-   Recent changes: added .xg-tb-menu* (freeze-panes toolbar popover) and
-   text-align:right on .xg-cell--num so wrapped numbers stay right-aligned. */
+   Recent changes: added .xg-header-sort (hover-revealed column-header sort
+   button) alongside the .xg-tb-menu* freeze popover styles. */
 
 .xg-root {
   display: flex;
@@ -301,6 +301,35 @@
   background: #d3e3fd;
   color: #1967d2;
   font-weight: 600;
+}
+
+/* Hover-revealed sort button in column headers. Sits left of the resize
+   grip; hidden until the header is hovered. */
+.xg-header-sort {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: #5f6368;
+  cursor: pointer;
+}
+
+.xg-header-cell:hover .xg-header-sort {
+  display: inline-flex;
+}
+
+.xg-header-sort:hover {
+  background: #e1e3e6;
+  color: #1a73e8;
 }
 
 .xg-resize-grip {

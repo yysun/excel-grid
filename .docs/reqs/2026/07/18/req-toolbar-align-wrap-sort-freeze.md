@@ -23,10 +23,16 @@ grid):
 2. **Text wrapping**: one toggle button that turns word wrapping on/off for
    the selection. Wrapped cells render multi-line within the current row
    height (clipped if too tall). Pressed state reflects the active cell.
-3. **Sorting**: ascending and descending buttons.
-   - Multi-cell selection: sort the selected range by its first column.
-   - Single-cell selection: sort the sheet's used range by the active cell's
-     column (same behavior as the column-header context menu).
+3. **Sorting**: sort controls live on the column headers, not the toolbar
+   (scope change 2026-07-19: toolbar sort buttons were removed because a
+   selection-scoped sort silently broke row integrity for column-only
+   selections).
+   - Each column header shows a small sort button on hover; clicking sorts
+     the whole used range by that column with rows kept intact (same as the
+     header context menu). A repeat click on the same column toggles the
+     direction (asc -> desc).
+   - The button never sorts a sub-range; range-scoped sorting remains
+     available only through the right-click context menu.
 4. **Filtering**: a filter toggle button.
    - No filter active: filter rows by the active cell's value in its column
      (same as the context menu's "Filter by value").
@@ -53,9 +59,10 @@ independent of value.
       within the row height; pressed state follows the active cell's style.
 - [x] Vertical alignment and wrap are undoable via undo/redo and removed by
       the clear-format button.
-- [x] Toolbar sort-ascending / sort-descending buttons sort the selection by
-      its first column (multi-cell) or the used range by the active column
-      (single cell), matching existing `sortRange` semantics.
+- [x] The toolbar has no sort buttons; each column header shows a
+      hover-revealed sort button that sorts the used range by that column
+      (rows intact), toggling asc/desc on repeat clicks, and is a no-op on
+      an empty or single-row used range.
 - [x] Toolbar filter button applies a value filter from the active cell when
       no filter is active, clears the filter when one is active, and shows a
       pressed state while filtering.

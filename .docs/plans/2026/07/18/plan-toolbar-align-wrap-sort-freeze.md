@@ -120,6 +120,23 @@ freeze-pane controls; vertical alignment and wrap become first-class
 - [x] Verify REQ acceptance criteria and update the REQ checkboxes with
       evidence (VR stage).
 
+### Phase 5 - Move sort to column headers (scope change 2026-07-19)
+
+- [x] Remove the Sort ascending / Sort descending buttons, the `sort` /
+      `canSort` logic, the `IconSort` component, and the now-unused
+      `SortDir` import from `src/components/Toolbar.tsx`.
+- [x] In `src/components/ExcelGrid.tsx` `colHeaderCell`, add a
+      hover-revealed sort button (inline SVG, `stopPropagation` on
+      mousedown so header drag/selection does not fire) that calls
+      `store.sortRange(used, col, dir)` on the used range; per-column
+      direction memory (ref Map) toggles asc/desc on repeat clicks; no-op
+      when the used range is null or single-row.
+- [x] Add `.xg-header-sort` CSS to `src/styles.css`: hidden by default,
+      shown on `.xg-header-cell:hover`, positioned clear of the resize
+      grip.
+- [x] Update REQ/E2E docs (done alongside this phase) and re-run
+      typecheck/tests/build plus E2E Scenario 3.
+
 ## Validation
 
 - `npm run typecheck` — no TypeScript errors.
