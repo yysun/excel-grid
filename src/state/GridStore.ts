@@ -6,11 +6,14 @@
 // (applyStyle/clearFormat, undoable) with number-format aware display;
 // structural edits (insert/delete/move rows/cols) via a single index-remap
 // primitive with sheet-snapshot undo and sheet-wide formula rewriting;
-// hidden rows/cols, value filters, frozen pane counts (view state, not
-// undoable), range sorting, and used-range computation.
-// Recent changes: added the structural/context-menu layer — remapAxis +
-// SheetPatch undo, insert/delete/move rows/cols, hide/filter/freeze state,
-// sortRange, getUsedRange.
+// hidden rows/cols, Excel-style per-column value-set filters (filterCols =
+// columns showing a filter button, colFilters = allowed value keys per
+// column, filteredRows derived on notify), frozen pane counts (view state,
+// not undoable), range sorting, and used-range computation.
+// Recent changes: replaced the single filterByValue filter with the
+// per-column value-set filter model (setFilterCols/setColFilter/
+// getColumnValues + filterValueKey); filterCols/colFilters ride in
+// SheetSnapshot so structural undo keeps them on the right columns.
 
 import { FormulaError, type ErrorCode } from "../formula/errors";
 import { evaluate, type EvalContext } from "../formula/evaluate";
@@ -61,7 +64,8 @@ interface SheetSnapshot {
   colWidths: Map<number, number>;
   hiddenRows: Set<number>;
   hiddenCols: Set<number>;
-  filteredRows: Set<number>;
+  filterCols: Set<number>;
+  colFilters: Map<number, Set<string>>;
 }
 
 interface SheetPatch {
@@ -98,7 +102,11 @@ export class GridStore {
   /** Manually hidden lines (view state; remapped by structural edits). */
   private hiddenRows = new Set<number>();
   private hiddenCols = new Set<number>();
-  /** Rows hidden by the active value filter (separate from manual hiding). */
+  /** Columns showing a filter button (filter mode). */
+  private filterCols = new Set<number>();
+  /** Per-column allowed value keys; a column absent here filters nothing. */
+  private colFilters = new Map<number, Set<string>>();
+  /** Rows hidden by column filters. Derived cache; rebuilt in notify. */
   private filteredRows = new Set<number>();
   private frozenRows = 0;
   private frozenCols = 0;
@@ -123,6 +131,11 @@ export class GridStore {
   getVersion = (): number => this.version;
 
   private notify(changes: GridChange[]): void {
+    // The second clause clears stale hidden rows after the last filter is
+    // removed (clear paths empty colFilters before notifying).
+    if (this.colFilters.size > 0 || this.filteredRows.size > 0) {
+      this.recomputeFilteredRows();
+    }
     this.version++;
     this.listeners.forEach((l) => l());
     if (changes.length > 0 && this.onChange) this.onChange(changes);
@@ -203,8 +216,32 @@ export class GridStore {
     return false;
   }
 
+  /** True while filter mode is on (any column shows a filter button). */
   hasFilter(): boolean {
-    return this.filteredRows.size > 0;
+    return this.filterCols.size > 0;
+  }
+
+  /** True when at least one column has an active (excluding) filter. */
+  hasActiveFilters(): boolean {
+    return this.colFilters.size > 0;
+  }
+
+  hasActiveColFilter(col: number): boolean {
+    return this.colFilters.has(col);
+  }
+
+  isFilterCol(col: number): boolean {
+    return this.filterCols.has(col);
+  }
+
+  getFilterCols(): Set<number> {
+    return new Set(this.filterCols);
+  }
+
+  /** Allowed value keys for the column's filter, or null when unfiltered. */
+  getColFilter(col: number): Set<string> | null {
+    const allowed = this.colFilters.get(col);
+    return allowed ? new Set(allowed) : null;
   }
 
   getFrozenRows(): number {
@@ -404,7 +441,9 @@ export class GridStore {
       colWidths: axis === "col" ? new Map() : new Map(this.colWidths),
       hiddenRows: axis === "row" ? new Set() : new Set(this.hiddenRows),
       hiddenCols: axis === "col" ? new Set() : new Set(this.hiddenCols),
-      filteredRows: axis === "row" ? new Set() : new Set(this.filteredRows),
+      filterCols: axis === "col" ? new Set() : new Set(this.filterCols),
+      colFilters:
+        axis === "col" ? new Map() : copyColFilters(this.colFilters),
     };
     for (const [key, rec] of this.cells) {
       const nk = mapKey(key);
@@ -431,17 +470,23 @@ export class GridStore {
           after.hiddenCols.add(mapped);
         }
       }
+      for (const col of this.filterCols) {
+        const mapped = map(col);
+        if (mapped !== null && mapped >= 0 && mapped < count) {
+          after.filterCols.add(mapped);
+        }
+      }
+      for (const [col, allowed] of this.colFilters) {
+        const mapped = map(col);
+        if (mapped !== null && mapped >= 0 && mapped < count) {
+          after.colFilters.set(mapped, new Set(allowed));
+        }
+      }
     } else {
       for (const row of this.hiddenRows) {
         const mapped = map(row);
         if (mapped !== null && mapped >= 0 && mapped < count) {
           after.hiddenRows.add(mapped);
-        }
-      }
-      for (const row of this.filteredRows) {
-        const mapped = map(row);
-        if (mapped !== null && mapped >= 0 && mapped < count) {
-          after.filteredRows.add(mapped);
         }
       }
     }
@@ -462,7 +507,8 @@ export class GridStore {
       colWidths: new Map(this.colWidths),
       hiddenRows: new Set(this.hiddenRows),
       hiddenCols: new Set(this.hiddenCols),
-      filteredRows: new Set(this.filteredRows),
+      filterCols: new Set(this.filterCols),
+      colFilters: copyColFilters(this.colFilters),
     };
   }
 
@@ -480,7 +526,8 @@ export class GridStore {
     this.colWidths = new Map(snap.colWidths);
     this.hiddenRows = new Set(snap.hiddenRows);
     this.hiddenCols = new Set(snap.hiddenCols);
-    this.filteredRows = new Set(snap.filteredRows);
+    this.filterCols = new Set(snap.filterCols);
+    this.colFilters = copyColFilters(snap.colFilters);
     for (const [key, raw] of snap.raws) {
       const { row, col } = parseKey(key);
       this.applyRaw(row, col, raw);
@@ -517,26 +564,85 @@ export class GridStore {
   }
 
   /**
-   * Hide every used-range row whose computed value in `col` differs from
-   * the value at (row, col). Replaces any active filter. Not undoable.
+   * Replace the set of filter-button columns (toolbar toggle on). Filters
+   * on columns dropped from the set are removed. View state: not undoable.
    */
-  filterByValue(col: number, row: number): void {
-    const used = this.getUsedRange();
-    if (!used) return;
-    const target = this.cells.get(cellKey(row, col))?.value ?? null;
-    const next = new Set<number>();
-    for (let r = used.startRow; r <= used.endRow; r++) {
-      const v = this.cells.get(cellKey(r, col))?.value ?? null;
-      if (v !== target) next.add(r);
+  setFilterCols(cols: number[]): void {
+    this.filterCols = new Set(
+      cols.filter((c) => c >= 0 && c < this.colCount)
+    );
+    for (const col of [...this.colFilters.keys()]) {
+      if (!this.filterCols.has(col)) this.colFilters.delete(col);
     }
-    this.filteredRows = next;
     this.notify([]);
   }
 
-  clearFilter(): void {
-    if (this.filteredRows.size === 0) return;
-    this.filteredRows.clear();
+  /** Toolbar toggle off: remove every filter button and every filter. */
+  clearFilterCols(): void {
+    if (this.filterCols.size === 0 && this.colFilters.size === 0) return;
+    this.filterCols.clear();
+    this.colFilters.clear();
     this.notify([]);
+  }
+
+  /** Clear all column filters but keep the filter buttons visible. */
+  clearColFilters(): void {
+    if (this.colFilters.size === 0) return;
+    this.colFilters.clear();
+    this.notify([]);
+  }
+
+  /**
+   * Set the allowed value-key set for one column (null clears that
+   * column's filter). Ensures the column shows a filter button. Filters
+   * on multiple columns combine with AND.
+   */
+  setColFilter(col: number, allowed: Set<string> | null): void {
+    if (col < 0 || col >= this.colCount) return;
+    this.filterCols.add(col);
+    if (allowed === null) this.colFilters.delete(col);
+    else this.colFilters.set(col, new Set(allowed));
+    this.notify([]);
+  }
+
+  /**
+   * Distinct values of `col` within the used range, sorted ascending
+   * (numbers before text, blanks last), with occurrence counts. `key` is
+   * the filterValueKey; blank cells collapse into the "" entry.
+   */
+  getColumnValues(
+    col: number
+  ): Array<{ key: string; label: string; count: number }> {
+    const used = this.getUsedRange();
+    if (!used) return [];
+    const byKey = new Map<string, { value: CellValue; count: number }>();
+    for (let r = used.startRow; r <= used.endRow; r++) {
+      const v = this.cells.get(cellKey(r, col))?.value ?? null;
+      const key = filterValueKey(v);
+      const entry = byKey.get(key);
+      if (entry) entry.count++;
+      else byKey.set(key, { value: v, count: 1 });
+    }
+    return [...byKey.entries()]
+      .sort((a, b) => compareCellValues(a[1].value, b[1].value, "asc"))
+      .map(([key, { count }]) => ({ key, label: key, count }));
+  }
+
+  /** Rebuild the derived filteredRows cache from colFilters. */
+  private recomputeFilteredRows(): void {
+    this.filteredRows.clear();
+    if (this.colFilters.size === 0) return;
+    const used = this.getUsedRange();
+    if (!used) return;
+    for (let r = used.startRow; r <= used.endRow; r++) {
+      for (const [col, allowed] of this.colFilters) {
+        const v = this.cells.get(cellKey(r, col))?.value ?? null;
+        if (!allowed.has(filterValueKey(v))) {
+          this.filteredRows.add(r);
+          break;
+        }
+      }
+    }
   }
 
   undo(): void {
@@ -763,7 +869,7 @@ function sheetSnapshotsEqual(a: SheetSnapshot, b: SheetSnapshot): boolean {
     }
     return true;
   };
-  const setsEqual = (x: Set<number>, y: Set<number>): boolean =>
+  const setsEqual = <T,>(x: Set<T>, y: Set<T>): boolean =>
     x.size === y.size && [...x].every((v) => y.has(v));
   return (
     mapsEqual(a.raws, b.raws, (p, q) => p === q) &&
@@ -771,8 +877,27 @@ function sheetSnapshotsEqual(a: SheetSnapshot, b: SheetSnapshot): boolean {
     mapsEqual(a.colWidths, b.colWidths, (p, q) => p === q) &&
     setsEqual(a.hiddenRows, b.hiddenRows) &&
     setsEqual(a.hiddenCols, b.hiddenCols) &&
-    setsEqual(a.filteredRows, b.filteredRows)
+    setsEqual(a.filterCols, b.filterCols) &&
+    mapsEqual(a.colFilters, b.colFilters, setsEqual)
   );
+}
+
+/** Deep copy so snapshots never alias the live inner Sets. */
+function copyColFilters(
+  src: Map<number, Set<string>>
+): Map<number, Set<string>> {
+  return new Map([...src].map(([col, allowed]) => [col, new Set(allowed)]));
+}
+
+/**
+ * Canonical string key for a computed cell value in column filters: "" for
+ * blank, TRUE/FALSE for booleans, String(n) for numbers (numFmt styling is
+ * deliberately ignored so equal values are one filter entry).
+ */
+export function filterValueKey(v: CellValue): string {
+  if (v === null) return "";
+  if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+  return String(v);
 }
 
 /**

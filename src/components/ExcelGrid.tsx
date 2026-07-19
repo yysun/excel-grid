@@ -9,9 +9,11 @@
 // context menus (cell / row header / column header) driving insert/delete/
 // move/hide/freeze/sort/filter/clipboard, and frozen panes rendered as
 // transform-synced overlay panes.
-// Recent changes: column headers gained a hover-revealed sort button that
-// sorts the used range by that column (asc, toggling to desc on repeat
-// clicks), replacing the toolbar's selection-scoped sort buttons.
+// Recent changes: filter-mode columns render an always-visible header
+// filter button (funnel; filled + highlighted while its column filter
+// excludes values) that opens the FilterPopup multi-value picker; the cell
+// context menu's filter items now drive the per-column value-set filter
+// API (setColFilter/clearColFilters).
 
 import {
   forwardRef,
@@ -23,7 +25,12 @@ import {
   useState,
 } from "react";
 import { adjustFormula } from "../formula/adjust";
-import { GridStore, type RawChange, type SortDir } from "../state/GridStore";
+import {
+  filterValueKey,
+  GridStore,
+  type RawChange,
+  type SortDir,
+} from "../state/GridStore";
 import type {
   CellCoord,
   CellRange,
@@ -34,6 +41,7 @@ import type {
   VAlign,
 } from "../types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { FilterPopup } from "./FilterPopup";
 import { Toolbar } from "./Toolbar";
 import {
   cellKey,
@@ -122,6 +130,15 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
     const [fxDraft, setFxDraft] = useState<string | null>(null);
     const [fillPreview, setFillPreview] = useState<CellRange | null>(null);
     const [menu, setMenu] = useState<MenuState | null>(null);
+    /** Open column-filter popup (anchored under its header button). */
+    const [filterPopup, setFilterPopup] = useState<{
+      col: number;
+      x: number;
+      y: number;
+    } | null>(null);
+    // Stable identity: FilterPopup re-subscribes document listeners when
+    // onClose changes, and ExcelGrid re-renders on every store notify.
+    const closeFilterPopup = useCallback(() => setFilterPopup(null), []);
     const internalClipboard = useRef<InternalClipboard | null>(null);
     const pasteHandledAt = useRef(0);
     const editorRef = useRef<{ commit: () => void } | null>(null);
@@ -881,12 +898,18 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         "sep",
         {
           label: "Filter by cell value",
-          onClick: () => store.filterByValue(active.col, active.row),
+          onClick: () =>
+            store.setColFilter(
+              active.col,
+              new Set([
+                filterValueKey(store.getCell(active.row, active.col)?.value ?? null),
+              ])
+            ),
         },
         {
           label: "Clear filter",
-          disabled: !store.hasFilter(),
-          onClick: () => store.clearFilter(),
+          disabled: !store.hasActiveFilters(),
+          onClick: () => store.clearColFilters(),
         },
       ];
     }, [
@@ -984,10 +1007,15 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
     const colHeaderCell = (col: number): React.ReactNode => {
       if (colWidths[col] === 0) return null;
       const inSel = col >= selRange.startCol && col <= selRange.endCol;
+      const hasFilterBtn = store.isFilterCol(col);
       return (
         <div
           key={col}
-          className={"xg-header-cell" + (inSel ? " xg-header-cell--sel" : "")}
+          className={
+            "xg-header-cell" +
+            (inSel ? " xg-header-cell--sel" : "") +
+            (hasFilterBtn ? " xg-header-cell--filter" : "")
+          }
           style={{
             left: colMetrics.offsets[col],
             top: 0,
@@ -1023,6 +1051,38 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
               />
             </svg>
           </button>
+          {hasFilterBtn && (
+            <button
+              type="button"
+              className={
+                "xg-header-filter" +
+                (store.hasActiveColFilter(col) ? " xg-header-filter--on" : "")
+              }
+              title={`Filter column ${colToLetters(col)}`}
+              onMouseDown={(e) => {
+                e.preventDefault(); // Keep keyboard focus on the grid body.
+                e.stopPropagation(); // Don't start the column-select drag.
+              }}
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setFilterPopup((p) =>
+                  p?.col === col
+                    ? null
+                    : { col, x: rect.left, y: rect.bottom + 2 }
+                );
+              }}
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
+                <path
+                  d="M1.5 2h7L6 5.4v2.8L4 7.3V5.4L1.5 2Z"
+                  stroke="currentColor"
+                  strokeWidth="1.1"
+                  strokeLinejoin="round"
+                  fill={store.hasActiveColFilter(col) ? "currentColor" : "none"}
+                />
+              </svg>
+            </button>
+          )}
           <div
             className="xg-resize-grip"
             onMouseDown={(e) => beginResizeDrag(e, col)}
@@ -1307,6 +1367,16 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
             y={menu.y}
             items={menuItems}
             onClose={closeMenu}
+          />
+        )}
+        {filterPopup && (
+          <FilterPopup
+            key={filterPopup.col}
+            store={store}
+            col={filterPopup.col}
+            x={filterPopup.x}
+            y={filterPopup.y}
+            onClose={closeFilterPopup}
           />
         )}
       </div>

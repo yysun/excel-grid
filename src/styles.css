@@ -1,7 +1,9 @@
 /* excel-grid library styles. All selectors are namespaced under .xg- so
    nothing leaks into consuming applications. Ships as dist/styles.css.
-   Recent changes: added .xg-header-sort (hover-revealed column-header sort
-   button) alongside the .xg-tb-menu* freeze popover styles. */
+   Recent changes: added .xg-header-filter (always-visible column filter
+   button; --on when the filter excludes values) and the .xg-filter-pop*
+   value-picker popup styles; the hover sort button shifts left on
+   .xg-header-cell--filter so the two don't overlap. */
 
 .xg-root {
   display: flex;
@@ -330,6 +332,154 @@
 .xg-header-sort:hover {
   background: #e1e3e6;
   color: #1a73e8;
+}
+
+/* When the column shows a filter button, the hover sort button moves left
+   so both fit. */
+.xg-header-cell--filter .xg-header-sort {
+  right: 24px;
+}
+
+/* Always-visible column filter button (filter mode). */
+.xg-header-filter {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: #5f6368;
+  cursor: pointer;
+}
+
+.xg-header-filter:hover {
+  background: #e1e3e6;
+  color: #1a73e8;
+}
+
+.xg-header-filter--on {
+  background: #d3e3fd;
+  color: #1967d2;
+}
+
+/* Column filter value-picker popup */
+.xg-filter-pop {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  width: 200px;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #dcdfe3;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 13px;
+  user-select: none;
+}
+
+.xg-filter-search {
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  border: 1px solid #dcdfe3;
+  border-radius: 4px;
+  font: inherit;
+  outline: none;
+}
+
+.xg-filter-search:focus {
+  border-color: #1a73e8;
+}
+
+.xg-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  color: #3a3f45;
+  cursor: pointer;
+}
+
+.xg-filter-item:hover {
+  background: #f2f3f5;
+}
+
+.xg-filter-item input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.xg-filter-all {
+  border-bottom: 1px solid #e5e6e8;
+  border-radius: 4px 4px 0 0;
+  margin-bottom: 2px;
+  padding-bottom: 5px;
+}
+
+.xg-filter-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.xg-filter-blank {
+  color: #80868b;
+  font-style: italic;
+}
+
+.xg-filter-count {
+  margin-left: auto;
+  color: #9aa0a6;
+  font-size: 11px;
+}
+
+.xg-filter-empty {
+  padding: 8px 4px;
+  color: #9aa0a6;
+}
+
+.xg-filter-foot {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.xg-filter-btn {
+  padding: 4px 14px;
+  border: 1px solid #dcdfe3;
+  border-radius: 4px;
+  background: #fff;
+  color: #3a3f45;
+  font: inherit;
+  cursor: pointer;
+}
+
+.xg-filter-btn:hover:not(:disabled) {
+  background: #f2f3f5;
+}
+
+.xg-filter-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.xg-filter-btn--ok {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: #fff;
+}
+
+.xg-filter-btn--ok:hover {
+  background: #1967d2;
 }
 
 .xg-resize-grip {

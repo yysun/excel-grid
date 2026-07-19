@@ -2,12 +2,13 @@
 // Features: undo/redo, clear format, percent/thousands/decimal number
 // formats, font-size dropdown, bold/italic/underline/strikethrough toggles,
 // text & fill color palettes, horizontal + vertical alignment, text wrap,
-// value-filter toggle, freeze-panes popover, and quick SUM — all operating
+// filter-mode toggle, freeze-panes popover, and quick SUM — all operating
 // on the current selection via GridStore, with pressed states derived from
 // the active cell's style. English tooltips, inline SVG icons, no external
 // dependencies. mousedown is prevented so grid focus is kept.
-// Recent changes: sort buttons moved to the column headers (see
-// ExcelGrid.tsx colHeaderCell); selection-scoped toolbar sort removed.
+// Recent changes: the Filter button now toggles Excel-style filter mode —
+// on: enables filter buttons on the selected columns (setFilterCols);
+// off: clears all filter buttons and filters (clearFilterCols).
 
 import { useEffect, useRef, useState } from "react";
 import type { GridStore, RawChange } from "../state/GridStore";
@@ -77,8 +78,13 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
   };
 
   const toggleFilter = () => {
-    if (store.hasFilter()) store.clearFilter();
-    else store.filterByValue(active.col, active.row);
+    if (store.hasFilter()) {
+      store.clearFilterCols();
+    } else {
+      const cols: number[] = [];
+      for (let c = selRange.startCol; c <= selRange.endCol; c++) cols.push(c);
+      store.setFilterCols(cols);
+    }
   };
 
   const frozen = store.getFrozenRows() > 0 || store.getFrozenCols() > 0;

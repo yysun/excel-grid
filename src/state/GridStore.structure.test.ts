@@ -157,23 +157,24 @@ describe("hide, filter, freeze", () => {
     expect(s.isRowHidden(2)).toBe(true);
   });
 
-  it("filterByValue hides non-matching used-range rows; manual unhide keeps them", () => {
+  it("column filters hide non-matching used-range rows; manual unhide keeps them", () => {
     const s = make();
     s.setCells([
       { row: 0, col: 2, raw: "x" },
       { row: 1, col: 2, raw: "y" },
       { row: 2, col: 2, raw: "x" },
     ]);
-    s.filterByValue(2, 0);
+    s.setColFilter(2, new Set(["x"]));
     expect(s.hasFilter()).toBe(true);
     expect(s.isRowHidden(1)).toBe(true);
     expect(s.isRowHidden(0)).toBe(false);
     expect(s.isRowHidden(2)).toBe(false);
     s.setRowsHidden(1, 1, false); // manual unhide does not clear the filter
     expect(s.isRowHidden(1)).toBe(true);
-    s.clearFilter();
-    expect(s.hasFilter()).toBe(false);
+    s.clearColFilters();
+    expect(s.hasActiveFilters()).toBe(false);
     expect(s.isRowHidden(1)).toBe(false);
+    expect(s.isFilterCol(2)).toBe(true); // buttons survive clearing filters
   });
 
   it("clamps frozen counts", () => {
