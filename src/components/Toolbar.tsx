@@ -3,18 +3,22 @@
 // formats, font-size dropdown, bold/italic/underline/strikethrough toggles,
 // text & fill color palettes, horizontal + vertical alignment, text wrap,
 // filter-mode toggle, freeze-panes popover, quick SUM, and a right-aligned
-// live search box (all columns or the current selection's columns,
-// tracked live via GridStore.setSearchQuery/setSearchScope) — all
-// operating on the current selection via GridStore, with pressed states
-// derived from the active cell's style. English tooltips, inline SVG
-// icons, no external dependencies. mousedown is prevented so grid focus is
-// kept (the search input opts back in so it can receive focus/typing).
-// Recent changes: added the right-aligned search box + scope select; "More
+// live search box — always scoped to the grid's current selection columns
+// (no separate scope control; tracked live via GridStore.setSearchQuery/
+// setSearchCols) — all operating on the current selection via GridStore,
+// with pressed states derived from the active cell's style. English
+// tooltips, inline SVG icons, no external dependencies. mousedown is
+// prevented so grid focus is kept (the search input opts back in so it can
+// receive focus/typing).
+// Recent changes: removed the "All columns" / "Selected columns" scope
+// dropdown per user feedback ("use the grid column selection") — search
+// scope is now always exactly the current selection's columns, pushed to
+// the store on every selRange change with no mode to toggle; "More
 // formats" dropdown gained Date / Time / Date time / Duration rows
 // (Excel-style serial-number formats, added by GridStore.formatNumber).
 
 import { useEffect, useRef, useState } from "react";
-import type { GridStore, RawChange, SearchScope } from "../state/GridStore";
+import type { GridStore, RawChange } from "../state/GridStore";
 import type {
   CellCoord,
   CellRange,
@@ -70,7 +74,6 @@ interface ToolbarProps {
 export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
   const [open, setOpen] = useState<Popover>(null);
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<SearchScope>("all");
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -82,18 +85,14 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
     return () => window.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  // Push the search scope to the store on every scope/selRange change, so
-  // "selected columns" mode keeps tracking the live selection without
-  // requiring the user to retype the query.
+  // Push the current selection's columns to the store on every selRange
+  // change, so search always matches whatever is selected in the grid
+  // right now — no scope toggle, no re-typing needed after selecting.
   useEffect(() => {
-    if (scope === "all") {
-      store.setSearchScope("all");
-      return;
-    }
     const cols: number[] = [];
     for (let c = selRange.startCol; c <= selRange.endCol; c++) cols.push(c);
-    store.setSearchScope("selected", cols);
-  }, [store, scope, selRange]);
+    store.setSearchCols(cols);
+  }, [store, selRange]);
 
   const changeQuery = (value: string) => {
     setQuery(value);
@@ -396,16 +395,6 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
       <span className="xg-tb-sep" />
       {btn("Sum", { onClick: quickSum, className: "xg-tb-sum" }, "Σ")}
       <div className="xg-tb-search">
-        <select
-          className="xg-tb-search-scope"
-          title="Search scope"
-          value={scope}
-          onChange={(e) => setScope(e.target.value as SearchScope)}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <option value="all">All columns</option>
-          <option value="selected">Selected columns</option>
-        </select>
         <div className="xg-tb-search-input-wrap">
           <IconSearch />
           <input

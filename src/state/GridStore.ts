@@ -9,20 +9,21 @@
 // hidden rows/cols, Excel-style per-column value-set filters (filterCols =
 // columns showing a filter button, colFilters = allowed value keys per
 // column, filteredRows derived on notify), a live text search (searchQuery
-// + searchScope/searchCols, matched against getDisplay; searchHiddenRows /
+// + searchCols, matched against getDisplay; searchHiddenRows /
 // searchMatchedCells derived on notify like filteredRows), frozen pane
 // counts (view state, not undoable), range sorting, and used-range
 // computation.
-// Recent changes: added search state (setSearchQuery/setSearchScope) and
-// derived searchHiddenRows/searchMatchedCells, folded into isRowHidden
-// alongside manual hides and column filters; formatNumber gained
-// "date"/"time"/"datetime"/"duration" renderings (Excel-style serial
-// numbers, UTC) delegating to utils/dateSerial; parseLiteral now
-// recognizes strict date/time/datetime literals (after the existing
-// number/boolean checks) and stores their serial. Auto-applying the
-// matching format on first entry lives in setCells, not here, so undo
-// replay and structural rewrites (which call applyRaw directly) never
-// re-trigger format detection.
+// Recent changes: setSearchCols(cols) replaced setSearchScope("all" |
+// "selected", cols) — there is no "search everything" mode in the store;
+// the caller (Toolbar) always passes its own current selection's columns,
+// so searching the whole sheet is just what happens when that selection
+// spans every column. formatNumber gained "date"/"time"/"datetime"/
+// "duration" renderings (Excel-style serial numbers, UTC) delegating to
+// utils/dateSerial; parseLiteral now recognizes strict date/time/datetime
+// literals (after the existing number/boolean checks) and stores their
+// serial. Auto-applying the matching format on first entry lives in
+// setCells, not here, so undo replay and structural rewrites (which call
+// applyRaw directly) never re-trigger format detection.
 
 import { FormulaError, type ErrorCode } from "../formula/errors";
 import { evaluate, type EvalContext } from "../formula/evaluate";
@@ -88,7 +89,6 @@ type Patch = RawPatch | StylePatch | SheetPatch;
 
 type Axis = "row" | "col";
 export type SortDir = "asc" | "desc";
-export type SearchScope = "all" | "selected";
 
 /** Styling a range larger than this is a no-op to keep the UI responsive. */
 export const STYLE_CELL_CAP = 200_000;
@@ -121,9 +121,8 @@ export class GridStore {
   private filteredRows = new Set<number>();
   /** Live text search: current query, column scope, and derived matches. */
   private searchQuery = "";
-  private searchScope: SearchScope = "all";
-  /** Pinned column set for "selected" scope; null when scope is "all". */
-  private searchCols: Set<number> | null = null;
+  /** Columns to search, driven live by the caller's own selection. */
+  private searchCols = new Set<number>();
   /** Rows with no search match in scope. Derived cache; rebuilt in notify. */
   private searchHiddenRows = new Set<number>();
   /** Cell keys whose display text matched the query. Derived cache. */
@@ -682,10 +681,6 @@ export class GridStore {
     return this.searchQuery;
   }
 
-  getSearchScope(): SearchScope {
-    return this.searchScope;
-  }
-
   /** True while a non-blank search query is active. */
   hasSearch(): boolean {
     return this.searchQuery.trim() !== "";
@@ -704,18 +699,18 @@ export class GridStore {
   }
 
   /**
-   * Set the search column scope. "selected" pins matching to `cols`
-   * (typically the caller's current selection, kept live by re-calling
-   * this as the selection changes); "all" searches every used-range
-   * column. View state: not undoable.
+   * Set the columns search matches against — always exactly `cols`, no
+   * "search everything" mode. The caller (the toolbar) re-calls this as
+   * its own selection changes, so passing every column searches the whole
+   * sheet and passing one column searches only that column. View state:
+   * not undoable.
    */
-  setSearchScope(scope: SearchScope, cols?: number[]): void {
-    this.searchScope = scope;
-    this.searchCols = scope === "selected" ? new Set(cols ?? []) : null;
+  setSearchCols(cols: number[]): void {
+    this.searchCols = new Set(cols);
     this.notify([]);
   }
 
-  /** Rebuild searchHiddenRows/searchMatchedCells from searchQuery/scope. */
+  /** Rebuild searchHiddenRows/searchMatchedCells from searchQuery/searchCols. */
   private recomputeSearch(): void {
     this.searchHiddenRows.clear();
     this.searchMatchedCells.clear();
@@ -724,12 +719,8 @@ export class GridStore {
     const used = this.getUsedRange();
     if (!used) return;
     const cols: number[] = [];
-    if (this.searchScope === "selected" && this.searchCols) {
-      for (const c of this.searchCols) {
-        if (c >= 0 && c < this.colCount) cols.push(c);
-      }
-    } else {
-      for (let c = used.startCol; c <= used.endCol; c++) cols.push(c);
+    for (const c of this.searchCols) {
+      if (c >= 0 && c < this.colCount) cols.push(c);
     }
     if (cols.length === 0) return;
     for (let row = used.startRow; row <= used.endRow; row++) {

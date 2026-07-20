@@ -14,10 +14,13 @@ toolbar row. As the user types:
 
 - The grid filters to show only rows that contain the query text (rows with
   no match anywhere in scope are hidden), updating on every keystroke.
-- The search scope is selectable: "All columns" (default) searches every
-  column of each row; "Selected columns" restricts matching to the column
-  range of the grid's current selection, and stays in sync as the selection
-  changes while that scope is active.
+- There is no separate scope selector control. The search scope is always
+  the column range of the grid's current selection (`startCol..endCol`),
+  read directly from the grid's own selection state and kept live as the
+  selection changes — no re-typing needed. To search the whole sheet, the
+  user selects every column (e.g. select-all); a single selected cell
+  scopes search to that one column, which is expected behavior, not a
+  special case to work around.
 - Search is case-insensitive substring matching against each cell's
   displayed text (`GridStore.getDisplay`), consistent with what the user
   sees on screen (number formats, dates, etc.), not the raw formula text.
@@ -31,14 +34,15 @@ toolbar row. As the user types:
 ## Acceptance Criteria
 
 - [x] A search input renders in the `Toolbar`, right-aligned within the
-      toolbar row.
+      toolbar row, with no separate scope selector control alongside it.
 - [x] Typing a query hides, without a manual "apply" step, every row (within
       the sheet's used range) that has no case-insensitive substring match
-      in the active scope's columns.
-- [x] A scope control lets the user pick "All columns" vs "Selected
-      columns"; in "Selected columns" mode the effective column set tracks
-      `startCol..endCol` of the current selection live (no re-typing
-      needed after changing the selection).
+      in the current selection's columns.
+- [x] The effective search column scope always equals
+      `startCol..endCol` of the grid's current selection, sourced from the
+      grid's own selection state (not a toolbar-local toggle), and updates
+      live as the selection changes while a query is active (no re-typing
+      needed).
 - [x] Cells containing a match (within scope) render the matching
       substring(s) wrapped in a visible highlight while a query is active.
 - [x] Emptying the search box unhides all search-hidden rows and removes
@@ -50,8 +54,9 @@ toolbar row. As the user types:
       hidden.
 - [x] Editing a cell's content while a search query is active re-evaluates
       that row's match/highlight state on the next render.
-- [x] Unit tests cover `GridStore` search matching/hiding for both scope
-      modes, blank queries, and interaction with `colFilters`.
+- [x] Unit tests cover `GridStore` search matching/hiding scoped to an
+      explicit column set, blank queries, and interaction with
+      `colFilters`.
 
 ## Constraints
 
@@ -68,6 +73,11 @@ toolbar row. As the user types:
 
 ## Non-Goals
 
+- A scope selector control (dropdown/toggle) for choosing "all columns" vs
+  "selected columns" — search scope is always driven by the grid's actual
+  selection, not a separate UI choice. (Reversed from this REQ's initial
+  version, which had a toolbar scope dropdown; corrected before that
+  dropdown shipped further.)
 - Regex or wildcard search syntax.
 - "Find & replace" or next/previous match navigation.
 - Persisting search query/scope across component remounts or in undo

@@ -1,10 +1,13 @@
 /* excel-grid library styles. All selectors are namespaced under .xg- so
    nothing leaks into consuming applications. Ships as dist/styles.css.
-   Recent changes: added .xg-tb-search/-scope/-input-wrap/-input/-clear for
-   the right-aligned toolbar search box, and .xg-search-hit for matched-text
-   highlighting inside .xg-cell; .xg-tb-fmt-item/-check/-example for the
-   toolbar "More formats" dropdown rows (check column, label, right-aligned
-   example), layered on the existing .xg-tb-menu popover styles. */
+   Recent changes: removed .xg-tb-search-scope (the search-scope <select>
+   it styled was removed — search always scopes to the grid's current
+   selection, no dropdown); kept .xg-tb-search/-input-wrap/-input/-clear
+   for the right-aligned toolbar search box, and .xg-search-hit for
+   matched-text highlighting inside .xg-cell; .xg-tb-fmt-item/-check/
+   -example for the toolbar "More formats" dropdown rows (check column,
+   label, right-aligned example), layered on the existing .xg-tb-menu
+   popover styles. */
 
 .xg-root {
   display: flex;
@@ -244,18 +247,6 @@
   gap: 4px;
   margin-left: auto;
   flex: 0 0 auto;
-}
-
-.xg-tb-search-scope {
-  height: 26px;
-  padding: 0 4px;
-  border: 1px solid #dcdfe3;
-  border-radius: 4px;
-  background: #fff;
-  color: #3a3f45;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
 }
 
 .xg-tb-search-input-wrap {
