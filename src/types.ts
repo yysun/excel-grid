@@ -1,11 +1,13 @@
 // Shared public + internal types for the excel-grid library.
 // Features: cell/coord/range models, change events, cell style model
 // (bold/italic/underline/strike, font size, colors, alignment, wrapping,
-// number formats), component props and imperative handle types re-exported
-// from src/index.ts.
-// Recent changes: widened NumFmt with "date" | "time" | "datetime" |
-// "duration" for the toolbar "More formats" dropdown (additive; a date
-// cell is still a plain number, no new CellValue type).
+// number formats), full-state GridSnapshot, component props and imperative
+// handle types re-exported from src/index.ts.
+// Recent changes: added GridSnapshot (cells + styles + colWidths) with the
+// initialState prop, onStateChange prop (fires on every store mutation,
+// including style-only and width-only edits), getSnapshot() on the handle,
+// and a display field on getData() entries — all additive, for host-app
+// persistence such as the demo's localStorage autosave.
 
 /** A computed scalar value a cell can hold. */
 export type CellValue = string | number | boolean | null;
@@ -78,6 +80,18 @@ export interface CellStyle {
   decimals?: number;
 }
 
+/**
+ * Serializable full-state snapshot of a grid: sparse cell raw text and
+ * styles keyed by A1 reference, column widths keyed by zero-based column
+ * index. Excludes view state (filters, hidden lines, frozen panes, search)
+ * and undo history. JSON-safe: suitable for localStorage persistence.
+ */
+export interface GridSnapshot {
+  cells: Record<string, string>;
+  styles: Record<string, CellStyle>;
+  colWidths: Record<number, number>;
+}
+
 /** One changed cell reported through onChange. */
 export interface GridChange {
   row: number;
@@ -97,8 +111,16 @@ export interface ExcelGridProps {
   cols?: number;
   /** Initial cell contents keyed by A1-style reference, e.g. { A1: "=B1+1" }. */
   initialCells?: Record<string, string>;
+  /** Full-state snapshot applied at mount (after initialCells). */
+  initialState?: GridSnapshot;
   /** Called after each committed change batch (edit, paste, clear, fill, undo, redo). */
   onChange?: (changes: GridChange[]) => void;
+  /**
+   * Called after every grid state mutation, including style-only and
+   * column-width-only edits that onChange does not report. Intended for
+   * host-app persistence (debounce + getSnapshot()).
+   */
+  onStateChange?: () => void;
   /** Row height in px. Default 24. */
   rowHeight?: number;
   /** Default column width in px. Default 100. */
@@ -115,6 +137,8 @@ export interface ExcelGridHandle {
   getCell(ref: string): CellData | null;
   /** Write a cell's raw text by A1-style reference (undoable, triggers recalc). */
   setCell(ref: string, raw: string): void;
-  /** All non-empty cells as { ref, raw, value }. */
-  getData(): Array<{ ref: string; raw: string; value: CellValue }>;
+  /** All non-empty cells as { ref, raw, value, display (format-aware text) }. */
+  getData(): Array<{ ref: string; raw: string; value: CellValue; display: string }>;
+  /** Serializable full grid state (cells + styles + column widths). */
+  getSnapshot(): GridSnapshot;
 }

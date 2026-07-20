@@ -1,21 +1,25 @@
-// TSV (tab-separated values) serialization for clipboard interop with
-// Excel Web / Google Sheets.
-// Features: encode a 2-D string matrix to TSV (quoting cells that contain
-// tabs/newlines/quotes) and parse TSV text back to a matrix, honoring
-// double-quote escaping the way Sheets emits it.
-// Recent changes: initial implementation.
+// Delimiter-separated-values serialization: TSV for clipboard interop with
+// Excel Web / Google Sheets, CSV for file import/export.
+// Features: encode a 2-D string matrix (quoting cells that contain the
+// delimiter, newlines, or quotes) and parse text back to a matrix,
+// honoring RFC-4180-style double-quote escaping the way Sheets emits it.
+// Rows are joined with "\n" on encode; "\r\n" and "\r" are normalized on
+// parse.
+// Recent changes: generalized the TSV encoder/parser by delimiter and
+// added toCSV/parseCSV for the demo's Open CSV / Save CSV file actions.
 
-function encodeCell(v: string): string {
-  return /[\t\n\r"]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+function encodeCell(v: string, delim: string): string {
+  return v.includes(delim) || /[\n\r"]/.test(v)
+    ? '"' + v.replace(/"/g, '""') + '"'
+    : v;
 }
 
-/** Serialize a row-major matrix to TSV. */
-export function toTSV(rows: string[][]): string {
-  return rows.map((r) => r.map(encodeCell).join("\t")).join("\n");
+function encodeDelimited(rows: string[][], delim: string): string {
+  return rows.map((r) => r.map((c) => encodeCell(c, delim)).join(delim)).join("\n");
 }
 
-/** Parse TSV text into a row-major matrix. Handles quoted cells with embedded tabs/newlines and "" escapes. */
-export function parseTSV(text: string): string[][] {
+/** Parse delimiter-separated text into a row-major matrix. Handles quoted cells with embedded delimiters/newlines and "" escapes. */
+function parseDelimited(text: string, delim: string): string[][] {
   // Normalize line endings; a single trailing newline (as Excel adds) is dropped.
   const src = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const rows: string[][] = [];
@@ -49,7 +53,7 @@ export function parseTSV(text: string): string[][] {
           field += src[i++];
         }
       }
-    } else if (ch === "\t") {
+    } else if (ch === delim) {
       pushField();
       i++;
     } else if (ch === "\n") {
@@ -65,4 +69,24 @@ export function parseTSV(text: string): string[][] {
     pushRow();
   }
   return rows;
+}
+
+/** Serialize a row-major matrix to TSV. */
+export function toTSV(rows: string[][]): string {
+  return encodeDelimited(rows, "\t");
+}
+
+/** Parse TSV text into a row-major matrix. */
+export function parseTSV(text: string): string[][] {
+  return parseDelimited(text, "\t");
+}
+
+/** Serialize a row-major matrix to CSV (RFC-4180-style quoting, LF rows). */
+export function toCSV(rows: string[][]): string {
+  return encodeDelimited(rows, ",");
+}
+
+/** Parse CSV text into a row-major matrix. */
+export function parseCSV(text: string): string[][] {
+  return parseDelimited(text, ",");
 }

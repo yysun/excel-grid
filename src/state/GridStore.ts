@@ -13,17 +13,11 @@
 // searchMatchedCells derived on notify like filteredRows), frozen pane
 // counts (view state, not undoable), range sorting, and used-range
 // computation.
-// Recent changes: setSearchCols(cols) replaced setSearchScope("all" |
-// "selected", cols) — there is no "search everything" mode in the store;
-// the caller (Toolbar) always passes its own current selection's columns,
-// so searching the whole sheet is just what happens when that selection
-// spans every column. formatNumber gained "date"/"time"/"datetime"/
-// "duration" renderings (Excel-style serial numbers, UTC) delegating to
-// utils/dateSerial; parseLiteral now recognizes strict date/time/datetime
-// literals (after the existing number/boolean checks) and stores their
-// serial. Auto-applying the matching format on first entry lives in
-// setCells, not here, so undo replay and structural rewrites (which call
-// applyRaw directly) never re-trigger format detection.
+// Recent changes: added getSnapshot() (serializable cells + styles +
+// colWidths for host-app persistence), initStyle() (direct style record
+// write for pre-render snapshot initialization: not undoable, no notify),
+// and a format-aware `display` field on getAllCells() entries (backing
+// the demo's displayed-text CSV export).
 
 import { FormulaError, type ErrorCode } from "../formula/errors";
 import { evaluate, type EvalContext } from "../formula/evaluate";
@@ -36,6 +30,7 @@ import type {
   CellStyle,
   CellValue,
   GridChange,
+  GridSnapshot,
 } from "../types";
 import {
   cellKey,
@@ -197,13 +192,61 @@ export class GridStore {
     return this.cells.get(cellKey(row, col))?.raw ?? "";
   }
 
-  getAllCells(): Array<{ row: number; col: number; raw: string; value: CellValue }> {
-    const out: Array<{ row: number; col: number; raw: string; value: CellValue }> = [];
+  getAllCells(): Array<{
+    row: number;
+    col: number;
+    raw: string;
+    value: CellValue;
+    display: string;
+  }> {
+    const out: Array<{
+      row: number;
+      col: number;
+      raw: string;
+      value: CellValue;
+      display: string;
+    }> = [];
     for (const [key, rec] of this.cells) {
       const { row, col } = parseKey(key);
-      out.push({ row, col, raw: rec.raw, value: rec.value });
+      out.push({
+        row,
+        col,
+        raw: rec.raw,
+        value: rec.value,
+        display: this.getDisplay(row, col),
+      });
     }
     return out;
+  }
+
+  /**
+   * Serializable full grid state: sparse cell raws and styles keyed by A1
+   * reference, column widths keyed by column index. Excludes view state
+   * (filters, hidden lines, frozen panes, search) and undo history.
+   */
+  getSnapshot(): GridSnapshot {
+    const cells: Record<string, string> = {};
+    for (const [key, rec] of this.cells) {
+      const { row, col } = parseKey(key);
+      cells[formatCellRef(row, col)] = rec.raw;
+    }
+    const styles: Record<string, CellStyle> = {};
+    for (const [key, style] of this.styles) {
+      const { row, col } = parseKey(key);
+      styles[formatCellRef(row, col)] = { ...style };
+    }
+    const colWidths: Record<number, number> = {};
+    for (const [col, width] of this.colWidths) colWidths[col] = width;
+    return { cells, styles, colWidths };
+  }
+
+  /**
+   * Set one cell's style record directly, for snapshot initialization
+   * before the first render only: not undoable and does not notify.
+   */
+  initStyle(row: number, col: number, style: CellStyle): void {
+    if (row < 0 || col < 0 || row >= this.rowCount || col >= this.colCount) return;
+    this.setStyleRecord(row, col, { ...style });
   }
 
   getColWidth(col: number): number {

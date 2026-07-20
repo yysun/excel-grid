@@ -9,13 +9,12 @@
 // context menus (cell / row header / column header) driving insert/delete/
 // move/hide/freeze/sort/filter/clipboard, and frozen panes rendered as
 // transform-synced overlay panes.
-// Recent changes: renderCells highlights matched substrings (wrapped in
-// <mark>) for cells the toolbar's live search matched
-// (store.hasSearch()/isCellMatched); filter-mode columns render an
-// always-visible header filter button (funnel; filled + highlighted while
-// its column filter excludes values) that opens the FilterPopup
-// multi-value picker; the cell context menu's filter items now drive the
-// per-column value-set filter API (setColFilter/clearColFilters).
+// Recent changes: added persistence wiring — the initialState prop seeds a
+// full GridSnapshot (cells, styles via initStyle, column widths) at store
+// creation after initialCells; onStateChange subscribes to every store
+// notify (covering style-only and width-only edits); the handle gained
+// getSnapshot() and getData() entries now include format-aware display
+// text.
 
 import {
   forwardRef,
@@ -94,7 +93,9 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       rows = 1000,
       cols = 26,
       initialCells,
+      initialState,
       onChange,
+      onStateChange,
       rowHeight = 24,
       defaultColWidth = 100,
       className,
@@ -104,13 +105,29 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
     const storeRef = useRef<GridStore | null>(null);
     if (storeRef.current === null) {
       const store = new GridStore(rows, cols, defaultColWidth);
-      if (initialCells) {
+      const seedCells = (source: Record<string, string>) => {
         const changes: RawChange[] = [];
-        for (const [refText, raw] of Object.entries(initialCells)) {
+        for (const [refText, raw] of Object.entries(source)) {
           const parsed = parseCellRef(refText);
           if (parsed) changes.push({ row: parsed.row, col: parsed.col, raw });
         }
         store.setCells(changes, false);
+      };
+      if (initialCells) seedCells(initialCells);
+      // Full-state snapshot applies after initialCells; all of this runs
+      // before the first render, so notify() reaches no subscribers yet.
+      if (initialState) {
+        // Tolerate partial snapshots (e.g. hand-edited or older persisted
+        // JSON): a missing section means "none", never a crash.
+        seedCells(initialState.cells ?? {});
+        for (const [refText, style] of Object.entries(initialState.styles ?? {})) {
+          const parsed = parseCellRef(refText);
+          if (parsed) store.initStyle(parsed.row, parsed.col, style);
+        }
+        for (const [col, width] of Object.entries(initialState.colWidths ?? {})) {
+          // JSON round-trips numeric keys as strings.
+          if (typeof width === "number") store.setColWidth(Number(col), width);
+        }
       }
       storeRef.current = store;
     }
@@ -118,6 +135,15 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
     useEffect(() => {
       store.onChange = onChange ?? null;
     }, [store, onChange]);
+
+    // Persistence signal: fires on every store notify, including
+    // style-only and width-only edits that onChange does not report.
+    const onStateChangeRef = useRef(onStateChange);
+    onStateChangeRef.current = onStateChange;
+    useEffect(
+      () => store.subscribe(() => onStateChangeRef.current?.()),
+      [store]
+    );
 
     const version = useSyncExternalStore(store.subscribe, store.getVersion, store.getVersion);
 
@@ -942,11 +968,13 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         getData: () =>
           store
             .getAllCells()
-            .map(({ row, col, raw, value }) => ({
+            .map(({ row, col, raw, value, display }) => ({
               ref: formatCellRef(row, col),
               raw,
               value,
+              display,
             })),
+        getSnapshot: () => store.getSnapshot(),
       }),
       [store]
     );

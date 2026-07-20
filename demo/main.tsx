@@ -1,120 +1,205 @@
 // Demo app for excel-grid.
-// Features: loads demo/accounts-6.json (1,328 CRM account records with a
-// nested JSON `data` payload per record) into the grid, plus an onChange
-// event log and buttons exercising the imperative ref API (setCell / getCell).
-// Recent changes: replaced the synthetic sample data with accounts-6.json.
+// Features: localStorage persistence keyed by file name — every edit
+// (data, formatting, column widths) autosaves a GridSnapshot under
+// "excel-grid-demo:file:{fileName}" (300 ms debounce, flushed on
+// pagehide/hidden); boot restores the last file ("excel-grid-demo:current")
+// or shows a blank grid; header buttons: New (confirm + clear), Open CSV…
+// (File API, imported "=" cells apostrophe-escaped), Save CSV (displayed
+// text of the used range, Blob download); onChange event log.
+// Recent changes: replaced the bundled accounts-6.json boot data with the
+// localStorage/CSV workflow above.
 
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ExcelGrid,
+  colToLetters,
+  parseCellRef,
+  parseCSV,
+  toCSV,
   type ExcelGridHandle,
   type GridChange,
+  type GridSnapshot,
 } from "../src/index";
-import accounts from "./accounts-6.json";
 
-interface AccountRecord {
-  id: number;
-  name: string;
-  data: string;
-  teamId: number | null;
-  noteCount: number;
+const DEFAULT_FILE_NAME = "untitled.csv";
+const CURRENT_KEY = "excel-grid-demo:current";
+const fileKey = (name: string) => `excel-grid-demo:file:${name}`;
+
+const BLANK_ROWS = 1000;
+const BLANK_COLS = 26;
+
+interface DocState {
+  fileName: string;
+  snapshot: GridSnapshot | null;
+  /** React key for ExcelGrid: bump to remount with fresh initial state. */
+  epoch: number;
 }
 
-// The nested `data` JSON uses inconsistent key spellings across records
-// (e.g. "numberOfAgents" vs "# of agents", "repId" vs "RepID"), so each
-// column lists the aliases to fall back through.
-const columns: { label: string; aliases: string[] }[] = [
-  { label: "Brand", aliases: ["brand"] },
-  { label: "Status", aliases: ["status", "Status"] },
-  { label: "Phone", aliases: ["phoneNumber"] },
-  { label: "Website", aliases: ["website"] },
-  { label: "City", aliases: ["city", "City"] },
-  { label: "Province", aliases: ["province"] },
-  { label: "Agents", aliases: ["numberOfAgents", "# of agents"] },
-  { label: "Sales Type", aliases: ["salesType", "type", "Type"] },
-  { label: "Rep", aliases: ["repId", "RepID"] },
-  { label: "Origination", aliases: ["origination", "Origination"] },
-  { label: "Contract Date", aliases: ["contractDate"] },
-  {
-    label: "Target Close",
-    aliases: ["targetCloseDate", "target Close Date", "Target Close Date"],
-  },
-  {
-    label: "Last Outreach",
-    aliases: ["lastOutreach", "last Outreach", "Last Outreach"],
-  },
-  {
-    label: "Next Outreach",
-    aliases: ["nextOutreach", "next Outreach", "Next Outreach"],
-  },
-  { label: "Markets", aliases: ["markets", "market(s)", "Market(s)"] },
-  { label: "Locations", aliases: ["locations"] },
-];
-
-function colLetter(index: number): string {
-  let s = "";
-  let n = index;
-  do {
-    s = String.fromCharCode(65 + (n % 26)) + s;
-    n = Math.floor(n / 26) - 1;
-  } while (n >= 0);
-  return s;
-}
-
-function buildCells(records: AccountRecord[]): Record<string, string> {
-  const cells: Record<string, string> = {};
-  const headers = ["ID", "Name", ...columns.map((c) => c.label), "Notes"];
-  headers.forEach((h, i) => {
-    cells[`${colLetter(i)}1`] = h;
-  });
-
-  const sorted = [...records].sort((a, b) => a.name.localeCompare(b.name));
-  sorted.forEach((rec, i) => {
-    const row = i + 2;
-    let data: Record<string, unknown> = {};
-    try {
-      data = JSON.parse(rec.data);
-    } catch {
-      // leave the detail columns blank for unparseable payloads
+function loadInitialDoc(): DocState {
+  try {
+    const fileName = localStorage.getItem(CURRENT_KEY) ?? DEFAULT_FILE_NAME;
+    const json = localStorage.getItem(fileKey(fileName));
+    if (json) {
+      const snapshot = JSON.parse(json) as GridSnapshot;
+      if (snapshot && typeof snapshot === "object" && snapshot.cells) {
+        return { fileName, snapshot, epoch: 0 };
+      }
     }
-    const values = [
-      rec.id,
-      rec.name,
-      ...columns.map(({ aliases }) => {
-        for (const key of aliases) {
-          const v = data[key];
-          if (v !== undefined && v !== null && v !== "") return v;
-        }
-        return "";
-      }),
-      rec.noteCount,
-    ];
-    values.forEach((v, col) => {
-      const raw = String(v);
-      if (raw === "") return;
-      // A leading "=" in source data would otherwise be parsed as a formula.
-      cells[`${colLetter(col)}${row}`] = raw.startsWith("=") ? `'${raw}` : raw;
+    return { fileName, snapshot: null, epoch: 0 };
+  } catch {
+    // Corrupt stored JSON (or storage unavailable): start blank.
+    return { fileName: DEFAULT_FILE_NAME, snapshot: null, epoch: 0 };
+  }
+}
+
+/** Grid dimensions large enough for the snapshot plus editing headroom. */
+function gridSize(snapshot: GridSnapshot | null): { rows: number; cols: number } {
+  let maxRow = 0;
+  let maxCol = 0;
+  for (const ref of Object.keys(snapshot?.cells ?? {})) {
+    const parsed = parseCellRef(ref);
+    if (parsed) {
+      maxRow = Math.max(maxRow, parsed.row);
+      maxCol = Math.max(maxCol, parsed.col);
+    }
+  }
+  return {
+    rows: Math.max(BLANK_ROWS, maxRow + 101),
+    cols: Math.max(BLANK_COLS, maxCol + 3),
+  };
+}
+
+function snapshotFromCSV(text: string): GridSnapshot {
+  const matrix = parseCSV(text);
+  const cells: Record<string, string> = {};
+  matrix.forEach((row, r) => {
+    row.forEach((field, c) => {
+      if (field === "") return;
+      // Foreign CSV data must never execute as a formula: apostrophe-
+      // escape a leading "=" (the apostrophe stays visible, by design).
+      cells[`${colToLetters(c)}${r + 1}`] = field.startsWith("=") ? `'${field}` : field;
     });
   });
-
-  // Summary row demonstrating formulas over the loaded data.
-  const agentsCol = colLetter(2 + columns.findIndex((c) => c.label === "Agents"));
-  const lastRow = sorted.length + 1;
-  const summaryRow = lastRow + 2;
-  cells[`A${summaryRow}`] = "Total agents";
-  cells[`${agentsCol}${summaryRow}`] = `=SUM(${agentsCol}2:${agentsCol}${lastRow})`;
-  return cells;
+  return { cells, styles: {}, colWidths: {} };
 }
-
-const records = accounts as AccountRecord[];
-const initialCells = buildCells(records);
-const rowCount = records.length + 100;
-const colCount = Math.max(columns.length + 3, 26);
 
 function App() {
   const gridRef = useRef<ExcelGridHandle>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [doc, setDoc] = useState<DocState>(loadInitialDoc);
   const [log, setLog] = useState<string[]>([]);
+
+  const { rows, cols } = useMemo(() => gridSize(doc.snapshot), [doc]);
+
+  // ---- autosave (debounced; flushed on pagehide / tab hidden) ----
+
+  const saveTimer = useRef<number | null>(null);
+  const persistNow = () => {
+    const snapshot = gridRef.current?.getSnapshot();
+    if (!snapshot) return;
+    try {
+      localStorage.setItem(fileKey(doc.fileName), JSON.stringify(snapshot));
+      localStorage.setItem(CURRENT_KEY, doc.fileName);
+    } catch (e) {
+      console.error("excel-grid demo: autosave failed", e);
+    }
+  };
+  const persistRef = useRef(persistNow);
+  persistRef.current = persistNow;
+
+  const handleStateChange = () => {
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      saveTimer.current = null;
+      persistRef.current();
+    }, 300);
+  };
+
+  /** Run any pending debounced save now (still under the current file name). */
+  const flushPendingSave = () => {
+    if (saveTimer.current !== null) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      persistRef.current();
+    }
+  };
+  const flushRef = useRef(flushPendingSave);
+  flushRef.current = flushPendingSave;
+
+  useEffect(() => {
+    const flush = () => flushRef.current();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  // ---- file actions ----
+
+  const openFile = async (file: File) => {
+    // Don't lose the previous file's last edit to the debounce window.
+    flushPendingSave();
+    const snapshot = snapshotFromCSV(await file.text());
+    try {
+      localStorage.setItem(fileKey(file.name), JSON.stringify(snapshot));
+      localStorage.setItem(CURRENT_KEY, file.name);
+    } catch (e) {
+      console.error("excel-grid demo: persisting opened file failed", e);
+    }
+    setDoc((d) => ({ fileName: file.name, snapshot, epoch: d.epoch + 1 }));
+  };
+
+  const saveCSV = () => {
+    const data = gridRef.current?.getData() ?? [];
+    let maxRow = -1;
+    let maxCol = -1;
+    const byCoord = new Map<string, string>();
+    for (const { ref, display } of data) {
+      const parsed = parseCellRef(ref);
+      if (!parsed) continue;
+      maxRow = Math.max(maxRow, parsed.row);
+      maxCol = Math.max(maxCol, parsed.col);
+      byCoord.set(`${parsed.row},${parsed.col}`, display);
+    }
+    const matrix: string[][] = [];
+    for (let r = 0; r <= maxRow; r++) {
+      const row: string[] = [];
+      for (let c = 0; c <= maxCol; c++) row.push(byCoord.get(`${r},${c}`) ?? "");
+      matrix.push(row);
+    }
+    const blob = new Blob([toCSV(matrix)], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = doc.fileName.endsWith(".csv") ? doc.fileName : `${doc.fileName}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const newGrid = () => {
+    if (!window.confirm("Clear the grid and start a new file? Saved data for the default file will be removed.")) {
+      return;
+    }
+    // Persist any pending edit under the current name first (removing the
+    // default entry below then discards it only when it IS the default,
+    // which is exactly what the user just confirmed).
+    flushPendingSave();
+    try {
+      localStorage.removeItem(fileKey(DEFAULT_FILE_NAME));
+      localStorage.setItem(CURRENT_KEY, DEFAULT_FILE_NAME);
+    } catch (e) {
+      console.error("excel-grid demo: resetting storage failed", e);
+    }
+    setDoc((d) => ({ fileName: DEFAULT_FILE_NAME, snapshot: null, epoch: d.epoch + 1 }));
+  };
+
+  // ---- change log ----
 
   const handleChange = (changes: GridChange[]) => {
     const line = changes
@@ -130,15 +215,34 @@ function App() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 12, gap: 8, boxSizing: "border-box" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <strong>excel-grid demo</strong> — accounts-6.json ({records.length} accounts)
+        <strong>excel-grid demo</strong>
+        <span id="file-name" style={{ fontFamily: "monospace", background: "#eef2f6", padding: "2px 8px", borderRadius: 4 }}>
+          {doc.fileName}
+        </span>
+        <button onClick={newGrid}>New</button>
+        <button onClick={() => fileInputRef.current?.click()}>Open CSV…</button>
+        <button onClick={saveCSV}>Save CSV</button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) void openFile(file);
+            e.target.value = "";
+          }}
+        />
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <ExcelGrid
+          key={doc.epoch}
           ref={gridRef}
-          rows={rowCount}
-          cols={colCount}
-          initialCells={initialCells}
+          rows={rows}
+          cols={cols}
+          initialState={doc.snapshot ?? undefined}
           onChange={handleChange}
+          onStateChange={handleStateChange}
         />
       </div>
       <div id="change-log" style={{ height: 90, overflow: "auto", fontFamily: "monospace", fontSize: 11, background: "#f6f8fa", padding: 6 }}>
