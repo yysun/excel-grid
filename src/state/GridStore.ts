@@ -8,15 +8,21 @@
 // primitive with sheet-snapshot undo and sheet-wide formula rewriting;
 // hidden rows/cols, Excel-style per-column value-set filters (filterCols =
 // columns showing a filter button, colFilters = allowed value keys per
-// column, filteredRows derived on notify), frozen pane counts (view state,
-// not undoable), range sorting, and used-range computation.
-// Recent changes: formatNumber gained "date"/"time"/"datetime"/"duration"
-// renderings (Excel-style serial numbers, UTC) delegating to
-// utils/dateSerial; parseLiteral now recognizes strict date/time/datetime
-// literals (after the existing number/boolean checks) and stores their
-// serial. Auto-applying the matching format on first entry lives in
-// setCells, not here, so undo replay and structural rewrites (which call
-// applyRaw directly) never re-trigger format detection.
+// column, filteredRows derived on notify), a live text search (searchQuery
+// + searchScope/searchCols, matched against getDisplay; searchHiddenRows /
+// searchMatchedCells derived on notify like filteredRows), frozen pane
+// counts (view state, not undoable), range sorting, and used-range
+// computation.
+// Recent changes: added search state (setSearchQuery/setSearchScope) and
+// derived searchHiddenRows/searchMatchedCells, folded into isRowHidden
+// alongside manual hides and column filters; formatNumber gained
+// "date"/"time"/"datetime"/"duration" renderings (Excel-style serial
+// numbers, UTC) delegating to utils/dateSerial; parseLiteral now
+// recognizes strict date/time/datetime literals (after the existing
+// number/boolean checks) and stores their serial. Auto-applying the
+// matching format on first entry lives in setCells, not here, so undo
+// replay and structural rewrites (which call applyRaw directly) never
+// re-trigger format detection.
 
 import { FormulaError, type ErrorCode } from "../formula/errors";
 import { evaluate, type EvalContext } from "../formula/evaluate";
@@ -82,6 +88,7 @@ type Patch = RawPatch | StylePatch | SheetPatch;
 
 type Axis = "row" | "col";
 export type SortDir = "asc" | "desc";
+export type SearchScope = "all" | "selected";
 
 /** Styling a range larger than this is a no-op to keep the UI responsive. */
 export const STYLE_CELL_CAP = 200_000;
@@ -112,6 +119,15 @@ export class GridStore {
   private colFilters = new Map<number, Set<string>>();
   /** Rows hidden by column filters. Derived cache; rebuilt in notify. */
   private filteredRows = new Set<number>();
+  /** Live text search: current query, column scope, and derived matches. */
+  private searchQuery = "";
+  private searchScope: SearchScope = "all";
+  /** Pinned column set for "selected" scope; null when scope is "all". */
+  private searchCols: Set<number> | null = null;
+  /** Rows with no search match in scope. Derived cache; rebuilt in notify. */
+  private searchHiddenRows = new Set<number>();
+  /** Cell keys whose display text matched the query. Derived cache. */
+  private searchMatchedCells = new Set<string>();
   private frozenRows = 0;
   private frozenCols = 0;
   private version = 0;
@@ -139,6 +155,13 @@ export class GridStore {
     // removed (clear paths empty colFilters before notifying).
     if (this.colFilters.size > 0 || this.filteredRows.size > 0) {
       this.recomputeFilteredRows();
+    }
+    if (
+      this.searchQuery.trim() !== "" ||
+      this.searchHiddenRows.size > 0 ||
+      this.searchMatchedCells.size > 0
+    ) {
+      this.recomputeSearch();
     }
     this.version++;
     this.listeners.forEach((l) => l());
@@ -197,9 +220,16 @@ export class GridStore {
     return this.styles.get(cellKey(row, col)) ?? null;
   }
 
-  /** True when the row is hidden manually or by the active filter. */
+  /**
+   * True when the row is hidden manually, by the active column filter, or
+   * by an active search query with no match in scope for this row.
+   */
   isRowHidden(row: number): boolean {
-    return this.hiddenRows.has(row) || this.filteredRows.has(row);
+    return (
+      this.hiddenRows.has(row) ||
+      this.filteredRows.has(row) ||
+      this.searchHiddenRows.has(row)
+    );
   }
 
   isColHidden(col: number): boolean {
@@ -644,6 +674,75 @@ export class GridStore {
     return [...byKey.entries()]
       .sort((a, b) => compareCellValues(a[1].value, b[1].value, "asc"))
       .map(([key, { count }]) => ({ key, label: key, count }));
+  }
+
+  // ---- search ----
+
+  getSearchQuery(): string {
+    return this.searchQuery;
+  }
+
+  getSearchScope(): SearchScope {
+    return this.searchScope;
+  }
+
+  /** True while a non-blank search query is active. */
+  hasSearch(): boolean {
+    return this.searchQuery.trim() !== "";
+  }
+
+  /** True when (row, col)'s displayed text matched the active query. */
+  isCellMatched(row: number, col: number): boolean {
+    return this.searchMatchedCells.has(cellKey(row, col));
+  }
+
+  /** Update the live search query. View state: not undoable. */
+  setSearchQuery(query: string): void {
+    if (this.searchQuery === query) return;
+    this.searchQuery = query;
+    this.notify([]);
+  }
+
+  /**
+   * Set the search column scope. "selected" pins matching to `cols`
+   * (typically the caller's current selection, kept live by re-calling
+   * this as the selection changes); "all" searches every used-range
+   * column. View state: not undoable.
+   */
+  setSearchScope(scope: SearchScope, cols?: number[]): void {
+    this.searchScope = scope;
+    this.searchCols = scope === "selected" ? new Set(cols ?? []) : null;
+    this.notify([]);
+  }
+
+  /** Rebuild searchHiddenRows/searchMatchedCells from searchQuery/scope. */
+  private recomputeSearch(): void {
+    this.searchHiddenRows.clear();
+    this.searchMatchedCells.clear();
+    const q = this.searchQuery.trim().toLowerCase();
+    if (!q) return;
+    const used = this.getUsedRange();
+    if (!used) return;
+    const cols: number[] = [];
+    if (this.searchScope === "selected" && this.searchCols) {
+      for (const c of this.searchCols) {
+        if (c >= 0 && c < this.colCount) cols.push(c);
+      }
+    } else {
+      for (let c = used.startCol; c <= used.endCol; c++) cols.push(c);
+    }
+    if (cols.length === 0) return;
+    for (let row = used.startRow; row <= used.endRow; row++) {
+      let matched = false;
+      for (const col of cols) {
+        const display = this.getDisplay(row, col);
+        if (display && display.toLowerCase().includes(q)) {
+          matched = true;
+          this.searchMatchedCells.add(cellKey(row, col));
+        }
+      }
+      if (!matched) this.searchHiddenRows.add(row);
+    }
   }
 
   /** Rebuild the derived filteredRows cache from colFilters. */

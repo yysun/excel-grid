@@ -1,7 +1,9 @@
 /* excel-grid library styles. All selectors are namespaced under .xg- so
    nothing leaks into consuming applications. Ships as dist/styles.css.
-   Recent changes: added .xg-tb-fmt-item/-check/-example for the toolbar
-   "More formats" dropdown rows (check column, label, right-aligned
+   Recent changes: added .xg-tb-search/-scope/-input-wrap/-input/-clear for
+   the right-aligned toolbar search box, and .xg-search-hit for matched-text
+   highlighting inside .xg-cell; .xg-tb-fmt-item/-check/-example for the
+   toolbar "More formats" dropdown rows (check column, label, right-aligned
    example), layered on the existing .xg-tb-menu popover styles. */
 
 .xg-root {
@@ -233,6 +235,76 @@
   padding-left: 16px;
   color: #8a9099;
   font-size: 11px;
+}
+
+/* Right-aligned toolbar search box */
+.xg-tb-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.xg-tb-search-scope {
+  height: 26px;
+  padding: 0 4px;
+  border: 1px solid #dcdfe3;
+  border-radius: 4px;
+  background: #fff;
+  color: #3a3f45;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.xg-tb-search-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.xg-tb-search-input-wrap svg {
+  position: absolute;
+  left: 7px;
+  color: #9aa0a6;
+  pointer-events: none;
+}
+
+.xg-tb-search-input {
+  width: 150px;
+  height: 26px;
+  padding: 0 22px 0 26px;
+  border: 1px solid #dcdfe3;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.xg-tb-search-input:focus {
+  border-color: #1a73e8;
+}
+
+.xg-tb-search-clear {
+  position: absolute;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: #80868b;
+  cursor: pointer;
+}
+
+.xg-tb-search-clear:hover {
+  background: #e1e3e6;
+  color: #3a3f45;
 }
 
 /* Formula bar */
@@ -644,6 +716,12 @@
 
 .xg-cell--err {
   color: #b00020;
+}
+
+.xg-search-hit {
+  background: #ffe066;
+  color: inherit;
+  border-radius: 2px;
 }
 
 /* Selection */

@@ -2,17 +2,19 @@
 // Features: undo/redo, clear format, percent/thousands/decimal number
 // formats, font-size dropdown, bold/italic/underline/strikethrough toggles,
 // text & fill color palettes, horizontal + vertical alignment, text wrap,
-// filter-mode toggle, freeze-panes popover, and quick SUM — all operating
-// on the current selection via GridStore, with pressed states derived from
-// the active cell's style. English tooltips, inline SVG icons, no external
-// dependencies. mousedown is prevented so grid focus is kept.
-// Recent changes: "More formats" dropdown gained Date / Time / Date time
-// / Duration rows (Excel-style serial-number formats, added by
-// GridStore.formatNumber); no toolbar logic changed since the check mark
-// and Automatic behavior already key off numFmt generically.
+// filter-mode toggle, freeze-panes popover, quick SUM, and a right-aligned
+// live search box (all columns or the current selection's columns,
+// tracked live via GridStore.setSearchQuery/setSearchScope) — all
+// operating on the current selection via GridStore, with pressed states
+// derived from the active cell's style. English tooltips, inline SVG
+// icons, no external dependencies. mousedown is prevented so grid focus is
+// kept (the search input opts back in so it can receive focus/typing).
+// Recent changes: added the right-aligned search box + scope select; "More
+// formats" dropdown gained Date / Time / Date time / Duration rows
+// (Excel-style serial-number formats, added by GridStore.formatNumber).
 
 import { useEffect, useRef, useState } from "react";
-import type { GridStore, RawChange } from "../state/GridStore";
+import type { GridStore, RawChange, SearchScope } from "../state/GridStore";
 import type {
   CellCoord,
   CellRange,
@@ -67,6 +69,8 @@ interface ToolbarProps {
 
 export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
   const [open, setOpen] = useState<Popover>(null);
+  const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<SearchScope>("all");
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -77,6 +81,24 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
   }, [open]);
+
+  // Push the search scope to the store on every scope/selRange change, so
+  // "selected columns" mode keeps tracking the live selection without
+  // requiring the user to retype the query.
+  useEffect(() => {
+    if (scope === "all") {
+      store.setSearchScope("all");
+      return;
+    }
+    const cols: number[] = [];
+    for (let c = selRange.startCol; c <= selRange.endCol; c++) cols.push(c);
+    store.setSearchScope("selected", cols);
+  }, [store, scope, selRange]);
+
+  const changeQuery = (value: string) => {
+    setQuery(value);
+    store.setSearchQuery(value);
+  };
 
   const activeStyle: CellStyle = store.getStyle(active.row, active.col) ?? {};
 
@@ -373,6 +395,40 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
       </div>
       <span className="xg-tb-sep" />
       {btn("Sum", { onClick: quickSum, className: "xg-tb-sum" }, "Σ")}
+      <div className="xg-tb-search">
+        <select
+          className="xg-tb-search-scope"
+          title="Search scope"
+          value={scope}
+          onChange={(e) => setScope(e.target.value as SearchScope)}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <option value="all">All columns</option>
+          <option value="selected">Selected columns</option>
+        </select>
+        <div className="xg-tb-search-input-wrap">
+          <IconSearch />
+          <input
+            type="text"
+            className="xg-tb-search-input"
+            placeholder="Search"
+            value={query}
+            onChange={(e) => changeQuery(e.target.value)}
+            onMouseDown={(e) => e.stopPropagation()}
+          />
+          {query !== "" && (
+            <button
+              type="button"
+              className="xg-tb-search-clear"
+              title="Clear search"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => changeQuery("")}
+            >
+              <IconClose />
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -518,6 +574,28 @@ function IconFilter() {
         stroke="currentColor"
         strokeWidth="1.2"
         strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconSearch() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="7" cy="7" r="4.3" stroke="currentColor" strokeWidth="1.3" />
+      <path d="m10.8 10.8 2.7 2.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconClose() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
+      <path
+        d="M2 2l6 6M8 2 2 8"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
       />
     </svg>
   );

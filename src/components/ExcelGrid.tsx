@@ -9,11 +9,13 @@
 // context menus (cell / row header / column header) driving insert/delete/
 // move/hide/freeze/sort/filter/clipboard, and frozen panes rendered as
 // transform-synced overlay panes.
-// Recent changes: filter-mode columns render an always-visible header
-// filter button (funnel; filled + highlighted while its column filter
-// excludes values) that opens the FilterPopup multi-value picker; the cell
-// context menu's filter items now drive the per-column value-set filter
-// API (setColFilter/clearColFilters).
+// Recent changes: renderCells highlights matched substrings (wrapped in
+// <mark>) for cells the toolbar's live search matched
+// (store.hasSearch()/isCellMatched); filter-mode columns render an
+// always-visible header filter button (funnel; filled + highlighted while
+// its column filter excludes values) that opens the FilterPopup
+// multi-value picker; the cell context menu's filter items now drive the
+// per-column value-set filter API (setColFilter/clearColFilters).
 
 import {
   forwardRef,
@@ -951,6 +953,10 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
 
     // ---- rendering ----
 
+    // Trimmed to match GridStore's own recomputeSearch matching, so
+    // highlighted spans line up exactly with isCellMatched.
+    const searchQuery = store.getSearchQuery().trim();
+
     const renderCells = (
       r0: number,
       r1: number,
@@ -967,6 +973,10 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
           const isNum =
             cell !== null && !cell.error && typeof cell.value === "number";
           const cs = store.getStyle(row, col);
+          const content =
+            display !== "" && searchQuery && store.isCellMatched(row, col)
+              ? highlightMatches(display, searchQuery)
+              : display;
           out.push(
             <div
               key={cellKey(row, col)}
@@ -983,7 +993,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
                 ...(cs ? cellStyleCss(cs) : null),
               }}
             >
-              {display}
+              {content}
             </div>
           );
         }
@@ -1416,6 +1426,31 @@ function cellStyleCss(cs: CellStyle): React.CSSProperties {
     whiteSpace: cs.wrap ? "normal" : undefined,
     wordBreak: cs.wrap ? "break-word" : undefined,
   };
+}
+
+/**
+ * Split `text` on every case-insensitive occurrence of `query`, wrapping
+ * matches in a <mark> so the search box's live query is visible in place.
+ */
+function highlightMatches(text: string, query: string): React.ReactNode {
+  const lower = text.toLowerCase();
+  const needle = query.toLowerCase();
+  const parts: React.ReactNode[] = [];
+  let i = 0;
+  let idx = lower.indexOf(needle, i);
+  let key = 0;
+  while (idx !== -1) {
+    if (idx > i) parts.push(text.slice(i, idx));
+    parts.push(
+      <mark key={key++} className="xg-search-hit">
+        {text.slice(idx, idx + needle.length)}
+      </mark>
+    );
+    i = idx + needle.length;
+    idx = lower.indexOf(needle, i);
+  }
+  if (i < text.length) parts.push(text.slice(i));
+  return parts;
 }
 
 interface CellEditorProps {
