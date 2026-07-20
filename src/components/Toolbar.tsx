@@ -6,11 +6,10 @@
 // on the current selection via GridStore, with pressed states derived from
 // the active cell's style. English tooltips, inline SVG icons, no external
 // dependencies. mousedown is prevented so grid focus is kept.
-// Recent changes: added a Google Sheets-style "123" format dropdown
-// (Automatic / Number / Percent / Scientific / Currency with example
-// output and a check on the active format); Automatic clears numFmt +
-// decimals in one undoable patch; bumpDecimals now starts from the active
-// format's default digit count so "increase" never lowers it.
+// Recent changes: "More formats" dropdown gained Date / Time / Date time
+// / Duration rows (Excel-style serial-number formats, added by
+// GridStore.formatNumber); no toolbar logic changed since the check mark
+// and Automatic behavior already key off numFmt generically.
 
 import { useEffect, useRef, useState } from "react";
 import type { GridStore, RawChange } from "../state/GridStore";
@@ -45,6 +44,10 @@ const FORMAT_ITEMS: Array<{
   { fmt: "percent", label: "Percent", example: "10.12%" },
   { fmt: "scientific", label: "Scientific", example: "1.01E+3" },
   { fmt: "currency", label: "Currency", example: "$1,000.12" },
+  { fmt: "date", label: "Date", example: "9/26/2008" },
+  { fmt: "time", label: "Time", example: "3:59:00 PM" },
+  { fmt: "datetime", label: "Date time", example: "9/26/2008 15:59:00" },
+  { fmt: "duration", label: "Duration", example: "24:01:00" },
 ];
 
 /** Formats whose default display uses 2 fraction digits. */

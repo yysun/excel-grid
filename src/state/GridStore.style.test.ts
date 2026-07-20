@@ -1,8 +1,9 @@
 // Tests for the GridStore style layer: applyStyle merge/removal semantics,
 // clearFormat, undo/redo integration with raw edits, number-format display
-// (percent/thousands/decimals plus the dropdown's number/currency/
-// scientific formats), the style-cell cap, and the valign/wrap keys added
-// for the toolbar vertical-alignment and wrap buttons.
+// (percent/thousands/decimals, number/currency/scientific, and
+// date/time/datetime/duration serial rendering incl. negative fallback
+// and the .00+/.0- no-op), the style-cell cap, and the valign/wrap keys
+// added for the toolbar vertical-alignment and wrap buttons.
 
 import { describe, expect, it } from "vitest";
 import { GridStore, STYLE_CELL_CAP } from "./GridStore";
@@ -234,6 +235,41 @@ describe("number formats in getDisplay", () => {
     store.applyStyle(cell(0, 0), { numFmt: undefined, decimals: undefined });
     expect(store.getDisplay(0, 0)).toBe("1234.5");
     expect(store.getStyle(0, 0)).toBeNull();
+  });
+
+  it("formats date, time, datetime, and duration serials", () => {
+    const store = makeStore();
+    store.setCells([
+      { row: 0, col: 0, raw: "39717.66597" },
+      { row: 1, col: 0, raw: "1.75" },
+      { row: 2, col: 0, raw: "-1.5" },
+    ]);
+    store.applyStyle(cell(0, 0), { numFmt: "date" });
+    expect(store.getDisplay(0, 0)).toBe("9/26/2008");
+    store.applyStyle(cell(0, 0), { numFmt: "time" });
+    expect(store.getDisplay(0, 0)).toBe("3:59:00 PM");
+    store.applyStyle(cell(0, 0), { numFmt: "datetime" });
+    expect(store.getDisplay(0, 0)).toBe("9/26/2008 15:59:00");
+    store.applyStyle(cell(1, 0), { numFmt: "duration" });
+    expect(store.getDisplay(1, 0)).toBe("42:00:00");
+    store.applyStyle(cell(2, 0), { numFmt: "duration" });
+    expect(store.getDisplay(2, 0)).toBe("-36:00:00");
+  });
+
+  it("falls back to plain rendering for a negative Date-formatted cell", () => {
+    const store = makeStore();
+    store.setCells([{ row: 0, col: 0, raw: "-5" }]);
+    store.applyStyle(cell(0, 0), { numFmt: "date" });
+    expect(store.getDisplay(0, 0)).toBe("-5");
+  });
+
+  it(".00+ leaves date-format display unchanged", () => {
+    const store = makeStore();
+    store.setCells([{ row: 0, col: 0, raw: "39717" }]);
+    store.applyStyle(cell(0, 0), { numFmt: "date" });
+    expect(store.getDisplay(0, 0)).toBe("9/26/2008");
+    store.applyStyle(cell(0, 0), { decimals: 2 });
+    expect(store.getDisplay(0, 0)).toBe("9/26/2008");
   });
 
   it("formats formula results but never raw text or errors", () => {

@@ -10,15 +10,19 @@
 // columns showing a filter button, colFilters = allowed value keys per
 // column, filteredRows derived on notify), frozen pane counts (view state,
 // not undoable), range sorting, and used-range computation.
-// Recent changes: formatNumber gained "number" (grouped, 2-decimal
-// default), "currency" ($-prefixed with the sign before the $), and
-// "scientific" (uppercase exponent) renderings for the toolbar format
-// dropdown; decimals still overrides each format's default digit count.
+// Recent changes: formatNumber gained "date"/"time"/"datetime"/"duration"
+// renderings (Excel-style serial numbers, UTC) delegating to
+// utils/dateSerial; parseLiteral now recognizes strict date/time/datetime
+// literals (after the existing number/boolean checks) and stores their
+// serial. Auto-applying the matching format on first entry lives in
+// setCells, not here, so undo replay and structural rewrites (which call
+// applyRaw directly) never re-trigger format detection.
 
 import { FormulaError, type ErrorCode } from "../formula/errors";
 import { evaluate, type EvalContext } from "../formula/evaluate";
 import { extractRefs, hasRefError, remapFormulaAxis } from "../formula/adjust";
 import { parse, type Ast } from "../formula/parser";
+import { formatDateSerial, parseDateTimeLiteral } from "../utils/dateSerial";
 import type {
   CellData,
   CellRange,
@@ -324,6 +328,20 @@ export class GridStore {
       patches.push({ kind: "raw", row: c.row, col: c.col, before, after });
       this.applyRaw(c.row, c.col, after);
       touched.push(key);
+      // Auto-apply the matching date/time format on first entry of an
+      // unambiguous literal, in the same undo batch as the raw change,
+      // but only over a cell with no explicit numFmt yet.
+      if (after !== null && !after.startsWith("=")) {
+        const dt = parseDateTimeLiteral(after.trim());
+        if (dt) {
+          const styleBefore = this.styles.get(key) ?? null;
+          if (styleBefore?.numFmt === undefined) {
+            const styleAfter = mergeStyle(styleBefore, { numFmt: dt.fmt });
+            patches.push({ kind: "style", row: c.row, col: c.col, before: styleBefore, after: styleAfter });
+            this.setStyleRecord(c.row, c.col, styleAfter);
+          }
+        }
+      }
     }
     if (patches.length === 0) return;
     if (record) {
@@ -989,9 +1007,19 @@ export function formatNumber(v: number, style: CellStyle): string {
         : "$" + groupedFixed(v, d ?? 2);
     case "scientific":
       return v.toExponential(d ?? 2).toUpperCase();
+    case "date":
+    case "time":
+    case "datetime":
+    case "duration":
+      return formatDateSerial(v, style.numFmt) ?? plainNumber(v, d);
     default:
-      return d === undefined ? String(v) : v.toFixed(d);
+      return plainNumber(v, d);
   }
+}
+
+/** Plain (no numFmt) numeric rendering, honoring an explicit decimals override. */
+function plainNumber(v: number, d: number | undefined): string {
+  return d === undefined ? String(v) : v.toFixed(d);
 }
 
 /** en-US grouped rendering with a fixed fraction-digit count. */
@@ -1002,11 +1030,13 @@ function groupedFixed(v: number, digits: number): string {
   });
 }
 
-/** Parse non-formula raw text into a value: number, boolean, or string. */
+/** Parse non-formula raw text into a value: number, boolean, date/time serial, or string. */
 export function parseLiteral(raw: string): CellValue {
   const trimmed = raw.trim();
   if (trimmed !== "" && !isNaN(Number(trimmed))) return Number(trimmed);
   if (/^true$/i.test(trimmed)) return true;
   if (/^false$/i.test(trimmed)) return false;
+  const dt = parseDateTimeLiteral(trimmed);
+  if (dt) return dt.serial;
   return raw;
 }

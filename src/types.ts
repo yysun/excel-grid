@@ -3,9 +3,9 @@
 // (bold/italic/underline/strike, font size, colors, alignment, wrapping,
 // number formats), component props and imperative handle types re-exported
 // from src/index.ts.
-// Recent changes: widened NumFmt with "number" | "currency" | "scientific"
-// for the toolbar "More formats" dropdown (additive; old stored styles
-// keep their meaning).
+// Recent changes: widened NumFmt with "date" | "time" | "datetime" |
+// "duration" for the toolbar "More formats" dropdown (additive; a date
+// cell is still a plain number, no new CellValue type).
 
 /** A computed scalar value a cell can hold. */
 export type CellValue = string | number | boolean | null;
@@ -41,7 +41,11 @@ export type NumFmt =
   | "thousands"
   | "number"
   | "currency"
-  | "scientific";
+  | "scientific"
+  | "date"
+  | "time"
+  | "datetime"
+  | "duration";
 
 /** Horizontal cell alignment. */
 export type HAlign = "left" | "center" | "right";
