@@ -115,7 +115,6 @@ const colCount = Math.max(columns.length + 3, 26);
 function App() {
   const gridRef = useRef<ExcelGridHandle>(null);
   const [log, setLog] = useState<string[]>([]);
-  const [apiResult, setApiResult] = useState("");
 
   const handleChange = (changes: GridChange[]) => {
     const line = changes
@@ -132,22 +131,6 @@ function App() {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 12, gap: 8, boxSizing: "border-box" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <strong>excel-grid demo</strong> — accounts-6.json ({records.length} accounts)
-        <button
-          id="api-set"
-          onClick={() => gridRef.current?.setCell("F1", "set via API")}
-        >
-          Set F1 via API
-        </button>
-        <button
-          id="api-read"
-          onClick={() => {
-            const cell = gridRef.current?.getCell("B2");
-            setApiResult(`B2 raw=${cell?.raw ?? ""} value=${cell?.value ?? ""}`);
-          }}
-        >
-          Read B2 via API
-        </button>
-        <span id="api-result" style={{ color: "#1967d2" }}>{apiResult}</span>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <ExcelGrid
