@@ -3,11 +3,13 @@
 // (data, formatting, column widths) autosaves a GridSnapshot under
 // "excel-grid-demo:file:{fileName}" (300 ms debounce, flushed on
 // pagehide/hidden); boot restores the last file ("excel-grid-demo:current")
-// or shows a blank grid; header buttons: New (confirm + clear), Open CSV…
-// (File API, imported "=" cells apostrophe-escaped), Save CSV (displayed
-// text of the used range, Blob download); onChange event log.
-// Recent changes: replaced the bundled accounts-6.json boot data with the
-// localStorage/CSV workflow above.
+// or shows a blank grid; header buttons: New (confirm + clear), Open…
+// (File API; .xlsx detected by PK magic bytes — content only, never by
+// extension — else CSV with imported "=" cells apostrophe-escaped), Save CSV
+// (displayed text of the used range), Save XLSX (full-fidelity snapshot
+// via snapshotToXlsx); onChange event log.
+// Recent changes: added xlsx open/save (content-sniffed Open…, Save XLSX
+// button; open failures alert and keep the current document).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -16,7 +18,9 @@ import {
   colToLetters,
   parseCellRef,
   parseCSV,
+  snapshotToXlsx,
   toCSV,
+  xlsxToSnapshot,
   type ExcelGridHandle,
   type GridChange,
   type GridSnapshot,
@@ -145,7 +149,24 @@ function App() {
   const openFile = async (file: File) => {
     // Don't lose the previous file's last edit to the debounce window.
     flushPendingSave();
-    const snapshot = snapshotFromCSV(await file.text());
+    // Binary read for both paths: file.text() would corrupt zip bytes.
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    const isZip =
+      bytes.length >= 4 &&
+      bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
+    let snapshot: GridSnapshot;
+    if (isZip) {
+      try {
+        snapshot = await xlsxToSnapshot(bytes);
+      } catch (e) {
+        console.error("excel-grid demo: opening xlsx failed", e);
+        window.alert(`Could not open "${file.name}" as an Excel file.`);
+        return;
+      }
+    } else {
+      snapshot = snapshotFromCSV(new TextDecoder().decode(bytes));
+    }
     try {
       localStorage.setItem(fileKey(file.name), JSON.stringify(snapshot));
       localStorage.setItem(CURRENT_KEY, file.name);
@@ -173,11 +194,31 @@ function App() {
       for (let c = 0; c <= maxCol; c++) row.push(byCoord.get(`${r},${c}`) ?? "");
       matrix.push(row);
     }
-    const blob = new Blob([toCSV(matrix)], { type: "text/csv" });
+    downloadBlob(
+      new Blob([toCSV(matrix)], { type: "text/csv" }),
+      doc.fileName.replace(/\.(csv|xlsx)$/i, "") + ".csv"
+    );
+  };
+
+  const saveXLSX = async () => {
+    const snapshot = gridRef.current?.getSnapshot();
+    if (!snapshot) return;
+    const bytes = await snapshotToXlsx(snapshot);
+    downloadBlob(
+      // Copy-construct: TS types the returned bytes as ArrayBufferLike-
+      // backed, which Blob's BlobPart rejects; the copy is ArrayBuffer-backed.
+      new Blob([new Uint8Array(bytes)], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      }),
+      doc.fileName.replace(/\.(csv|xlsx)$/i, "") + ".xlsx"
+    );
+  };
+
+  const downloadBlob = (blob: Blob, name: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = doc.fileName.endsWith(".csv") ? doc.fileName : `${doc.fileName}.csv`;
+    a.download = name;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -220,12 +261,13 @@ function App() {
           {doc.fileName}
         </span>
         <button onClick={newGrid}>New</button>
-        <button onClick={() => fileInputRef.current?.click()}>Open CSV…</button>
+        <button onClick={() => fileInputRef.current?.click()}>Open…</button>
         <button onClick={saveCSV}>Save CSV</button>
+        <button onClick={() => void saveXLSX()}>Save XLSX</button>
         <input
           ref={fileInputRef}
           type="file"
-          accept=".csv,text/csv"
+          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           style={{ display: "none" }}
           onChange={(e) => {
             const file = e.target.files?.[0];
