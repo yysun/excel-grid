@@ -474,10 +474,26 @@ function decodeXEscapes(s: string): string {
   );
 }
 
+/**
+ * Descendant elements with the given local name, regardless of XML
+ * namespace prefix. Some producers emit every spreadsheetml element under
+ * a prefix (e.g. <x:worksheet>, <x:row>), which plain getElementsByTagName
+ * (a qualified-name match) silently fails to find; matching on localName
+ * instead is prefix-agnostic.
+ */
+function tags(root: Document | Element, name: string): Element[] {
+  const all = root.getElementsByTagName("*");
+  const out: Element[] = [];
+  for (let i = 0; i < all.length; i++) {
+    if (all[i].localName === name) out.push(all[i]);
+  }
+  return out;
+}
+
 /** Concatenated text of all <t> descendants (handles rich-text runs). */
 function textOf(el: Element): string {
   let out = "";
-  const ts = el.getElementsByTagName("t");
+  const ts = tags(el, "t");
   for (let i = 0; i < ts.length; i++) out += ts[i].textContent ?? "";
   return decodeXEscapes(out);
 }
@@ -493,40 +509,38 @@ interface XfInfo {
 /** Parse styles.xml into per-xf CellStyle records. */
 function parseStyles(doc: Document): XfInfo[] {
   const codes = new Map<number, string>();
-  for (const nf of Array.from(doc.getElementsByTagName("numFmt"))) {
+  for (const nf of tags(doc, "numFmt")) {
     const id = Number(nf.getAttribute("numFmtId"));
     const code = nf.getAttribute("formatCode");
     if (Number.isFinite(id) && code !== null) codes.set(id, code);
   }
 
   const fontStyles: Partial<CellStyle>[] = [];
-  const fontsEl = doc.getElementsByTagName("fonts")[0];
+  const fontsEl = tags(doc, "fonts")[0];
   if (fontsEl) {
-    for (const font of Array.from(fontsEl.getElementsByTagName("font"))) {
+    for (const font of tags(fontsEl, "font")) {
       const s: Partial<CellStyle> = {};
-      if (font.getElementsByTagName("b").length) s.bold = true;
-      if (font.getElementsByTagName("i").length) s.italic = true;
-      if (font.getElementsByTagName("u").length) s.underline = true;
-      if (font.getElementsByTagName("strike").length) s.strike = true;
-      const sz = Number(font.getElementsByTagName("sz")[0]?.getAttribute("val"));
+      if (tags(font, "b").length) s.bold = true;
+      if (tags(font, "i").length) s.italic = true;
+      if (tags(font, "u").length) s.underline = true;
+      if (tags(font, "strike").length) s.strike = true;
+      const sz = Number(tags(font, "sz")[0]?.getAttribute("val"));
       // 11pt is the Excel default; anything else maps to px. Theme/indexed
       // colors (no rgb attribute) are skipped by argbToCss returning null.
       if (Number.isFinite(sz) && sz > 0 && sz !== 11) s.fontSize = Math.round(sz / 0.75);
-      const color = argbToCss(font.getElementsByTagName("color")[0]?.getAttribute("rgb") ?? null);
+      const color = argbToCss(tags(font, "color")[0]?.getAttribute("rgb") ?? null);
       if (color) s.color = color;
       fontStyles.push(s);
     }
   }
 
   const fillStyles: (string | null)[] = [];
-  const fillsEl = doc.getElementsByTagName("fills")[0];
+  const fillsEl = tags(doc, "fills")[0];
   if (fillsEl) {
-    for (const fill of Array.from(fillsEl.getElementsByTagName("fill"))) {
-      const pat = fill.getElementsByTagName("patternFill")[0];
+    for (const fill of tags(fillsEl, "fill")) {
+      const pat = tags(fill, "patternFill")[0];
       if (pat?.getAttribute("patternType") === "solid") {
-        fillStyles.push(
-          argbToCss(pat.getElementsByTagName("fgColor")[0]?.getAttribute("rgb") ?? null)
-        );
+        fillStyles.push(argbToCss(tags(pat, "fgColor")[0]?.getAttribute("rgb") ?? null));
       } else {
         fillStyles.push(null);
       }
@@ -534,9 +548,9 @@ function parseStyles(doc: Document): XfInfo[] {
   }
 
   const xfInfos: XfInfo[] = [];
-  const cellXfs = doc.getElementsByTagName("cellXfs")[0];
+  const cellXfs = tags(doc, "cellXfs")[0];
   if (cellXfs) {
-    for (const xf of Array.from(cellXfs.getElementsByTagName("xf"))) {
+    for (const xf of tags(cellXfs, "xf")) {
       const style: CellStyle = {};
       const numFmtId = Number(xf.getAttribute("numFmtId") ?? "0");
       const fmt = numFmtToStyle(numFmtId, codes.get(numFmtId));
@@ -545,7 +559,7 @@ function parseStyles(doc: Document): XfInfo[] {
       Object.assign(style, fontStyles[Number(xf.getAttribute("fontId") ?? "-1")] ?? {});
       const bg = fillStyles[Number(xf.getAttribute("fillId") ?? "-1")] ?? null;
       if (bg) style.background = bg;
-      const alignment = xf.getElementsByTagName("alignment")[0];
+      const alignment = tags(xf, "alignment")[0];
       if (alignment) {
         const h = alignment.getAttribute("horizontal") as HAlign | null;
         if (h && H_ALIGNS.includes(h)) style.align = h;
@@ -567,7 +581,7 @@ function parseStyles(doc: Document): XfInfo[] {
 /** Find a relationship target by type suffix in a parsed .rels document. */
 function relTarget(rels: Document | null, typeSuffix: string): string | null {
   if (!rels) return null;
-  for (const rel of Array.from(rels.getElementsByTagName("Relationship"))) {
+  for (const rel of tags(rels, "Relationship")) {
     if (rel.getAttribute("Type")?.endsWith(typeSuffix)) return rel.getAttribute("Target");
   }
   return null;
@@ -600,18 +614,18 @@ export async function xlsxToSnapshot(
     : "";
   const date1904 =
     ["1", "true"].includes(
-      workbook.getElementsByTagName("workbookPr")[0]?.getAttribute("date1904") ?? ""
+      tags(workbook, "workbookPr")[0]?.getAttribute("date1904") ?? ""
     );
 
   // First sheet in workbook document order -> its worksheet part.
   const wbRelsName = wbDir ? `${wbDir}/_rels/workbook.xml.rels` : "_rels/workbook.xml.rels";
   const wbRels = getXml(wbRelsName);
-  const firstSheet = workbook.getElementsByTagName("sheet")[0];
+  const firstSheet = tags(workbook, "sheet")[0];
   let sheetPath: string | null = null;
   const sheetRelId =
     firstSheet?.getAttribute("r:id") ?? firstSheet?.getAttributeNS(NS_DOC_REL, "id");
   if (sheetRelId && wbRels) {
-    for (const rel of Array.from(wbRels.getElementsByTagName("Relationship"))) {
+    for (const rel of tags(wbRels, "Relationship")) {
       if (rel.getAttribute("Id") === sheetRelId) {
         sheetPath = resolvePath(wbDir, rel.getAttribute("Target") ?? "");
         break;
@@ -626,7 +640,7 @@ export async function xlsxToSnapshot(
   const sstDoc = getXml(sstTarget ? resolvePath(wbDir, sstTarget) : `${wbDir}/sharedStrings.xml`);
   const sharedStrings: string[] = [];
   if (sstDoc) {
-    for (const si of Array.from(sstDoc.getElementsByTagName("si"))) {
+    for (const si of tags(sstDoc, "si")) {
       sharedStrings.push(textOf(si));
     }
   }
@@ -639,7 +653,7 @@ export async function xlsxToSnapshot(
   const colWidths: Record<number, number> = {};
 
   // Column widths (character units -> px, inverse of the writer formula).
-  for (const col of Array.from(sheet.getElementsByTagName("col"))) {
+  for (const col of tags(sheet, "col")) {
     const width = Number(col.getAttribute("width"));
     const custom = col.getAttribute("customWidth");
     if (!Number.isFinite(width) || !(custom === "1" || custom === "true")) continue;
@@ -658,11 +672,11 @@ export async function xlsxToSnapshot(
   const guard = (s: string): string => (s.startsWith("=") ? "'" + s : s);
 
   let rowIdx = -1;
-  for (const rowEl of Array.from(sheet.getElementsByTagName("row"))) {
+  for (const rowEl of tags(sheet, "row")) {
     const r = Number(rowEl.getAttribute("r"));
     rowIdx = Number.isFinite(r) && r >= 1 ? r - 1 : rowIdx + 1;
     let colIdx = -1;
-    for (const c of Array.from(rowEl.getElementsByTagName("c"))) {
+    for (const c of tags(rowEl, "c")) {
       const refAttr = c.getAttribute("r");
       const parsed = refAttr ? parseCellRef(refAttr) : null;
       const row = parsed ? parsed.row : rowIdx;
@@ -677,11 +691,11 @@ export async function xlsxToSnapshot(
       if (xf && Object.keys(xf.style).length > 0) styles[ref] = { ...xf.style };
 
       const t = c.getAttribute("t") ?? "n";
-      const vEl = c.getElementsByTagName("v")[0];
+      const vEl = tags(c, "v")[0];
       const v = vEl?.textContent ?? "";
 
       // Formulas win over cached values; the grid re-evaluates them.
-      const fEl = c.getElementsByTagName("f")[0];
+      const fEl = tags(c, "f")[0];
       if (fEl) {
         const fText = fEl.textContent ?? "";
         if (fEl.getAttribute("t") === "shared") {
@@ -713,7 +727,7 @@ export async function xlsxToSnapshot(
         const str = sharedStrings[Number(v)];
         if (str !== undefined && str !== "") cells[ref] = guard(str);
       } else if (t === "inlineStr") {
-        const isEl = c.getElementsByTagName("is")[0];
+        const isEl = tags(c, "is")[0];
         const str = isEl ? textOf(isEl) : "";
         if (str !== "") cells[ref] = guard(str);
       } else if (t === "str") {

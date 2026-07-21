@@ -430,3 +430,71 @@ describe("xlsxToSnapshot on an Excel-convention workbook", () => {
     await expect(xlsxToSnapshot(enc.encode("not a zip at all"))).rejects.toThrow(/zip:/);
   });
 });
+
+// Some producers (e.g. certain export tools) emit every spreadsheetml
+// element under a namespace prefix instead of the default namespace that
+// Excel/Numbers/openpyxl use. getElementsByTagName only matches by literal
+// qualified name, so a naive reader silently finds zero rows/cells and
+// opens an empty grid with no error. Regression coverage for that case.
+describe("xlsxToSnapshot on a namespace-prefixed workbook", () => {
+  const NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+  const REL_NS = 'xmlns="http://schemas.openxmlformats.org/package/2006/relationships"';
+  const REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+
+  const fixture = buildForeignZip([
+    {
+      name: "_rels/.rels",
+      xml: `<Relationships ${REL_NS}><Relationship Id="rId1" Type="${REL_TYPE}/officeDocument" Target="/xl/workbook.xml"/></Relationships>`,
+    },
+    {
+      name: "xl/workbook.xml",
+      xml: `<x:workbook xmlns:x="${NS}"><x:sheets><x:sheet name="Export" sheetId="1" r:id="rId1" xmlns:r="${REL_TYPE}"/></x:sheets></x:workbook>`,
+    },
+    {
+      name: "xl/_rels/workbook.xml.rels",
+      xml:
+        `<Relationships ${REL_NS}>` +
+        `<Relationship Id="rId1" Type="${REL_TYPE}/worksheet" Target="worksheets/sheet1.xml"/>` +
+        `<Relationship Id="rId2" Type="${REL_TYPE}/styles" Target="styles.xml"/>` +
+        `</Relationships>`,
+    },
+    {
+      name: "xl/styles.xml",
+      xml:
+        `<x:styleSheet xmlns:x="${NS}">` +
+        `<x:numFmts><x:numFmt numFmtId="181" formatCode="yyyy\\-MM\\-dd"/></x:numFmts>` +
+        `<x:fonts><x:font/><x:font><x:b/></x:font></x:fonts>` +
+        `<x:fills><x:fill><x:patternFill patternType="none"/></x:fill>` +
+        `<x:fill><x:patternFill patternType="gray125"/></x:fill></x:fills>` +
+        `<x:borders><x:border/></x:borders>` +
+        `<x:cellXfs><x:xf/><x:xf fontId="1"/><x:xf numFmtId="181"/></x:cellXfs>` +
+        `</x:styleSheet>`,
+    },
+    {
+      name: "xl/worksheets/sheet1.xml",
+      xml:
+        `<x:worksheet xmlns:x="${NS}">` +
+        `<x:sheetData>` +
+        `<x:row><x:c s="1" t="inlineStr"><x:is><x:t>apiName</x:t></x:is></x:c>` +
+        `<x:c t="inlineStr"><x:is><x:t>calls</x:t></x:is></x:c></x:row>` +
+        `<x:row><x:c s="2"><x:v>46198</x:v></x:c><x:c><x:v>947</x:v></x:c></x:row>` +
+        `<x:row/>` +
+        `<x:row><x:c t="b"><x:v>1</x:v></x:c>` +
+        `<x:c><x:f>A2+1</x:f><x:v>46199</x:v></x:c></x:row>` +
+        `</x:sheetData>` +
+        `</x:worksheet>`,
+    },
+  ]);
+
+  it("imports cells, styles, and formats despite the namespace prefix", async () => {
+    const snap = await xlsxToSnapshot(fixture);
+    expect(snap.cells.A1).toBe("apiName");
+    expect(snap.cells.B1).toBe("calls");
+    expect(snap.styles.A1).toEqual({ bold: true });
+    expect(snap.cells.A2).toBe("46198");
+    expect(snap.styles.A2?.numFmt).toBe("date");
+    expect(snap.cells.B2).toBe("947");
+    expect(snap.cells.A4).toBe("TRUE");
+    expect(snap.cells.B4).toBe("=A2+1");
+  });
+});
