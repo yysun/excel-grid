@@ -49,7 +49,9 @@ under the `xg-` class prefix and must be imported once per app.
 | `rows`            | `number`                         | `1000`  | Total row count                                    |
 | `cols`            | `number`                         | `26`    | Total column count                                 |
 | `initialCells`    | `Record<string, string>`         | —       | Initial contents keyed by A1-style ref             |
+| `initialState`    | `GridSnapshot`                   | —       | Full-state snapshot applied at mount (after `initialCells`) |
 | `onChange`        | `(changes: GridChange[]) => void`| —       | Fires per committed batch (edit/paste/fill/undo…)  |
+| `onStateChange`   | `() => void`                     | —       | Fires on every mutation, including style- and column-width-only edits; pair with `getSnapshot()` for host-app persistence |
 | `rowHeight`       | `number`                         | `24`    | Row height in px                                   |
 | `defaultColWidth` | `number`                         | `100`   | Default column width in px                         |
 | `className`       | `string`                         | —       | Extra class on the root element                    |
@@ -57,15 +59,17 @@ under the `xg-` class prefix and must be imported once per app.
 
 ## Ref API (`ExcelGridHandle`)
 
-| Method                 | Description                                              |
-| ---------------------- | -------------------------------------------------------- |
-| `getCell(ref)`         | `{ raw, value, error? }` for an A1-style ref, or `null`  |
-| `setCell(ref, raw)`    | Write a cell (undoable, recalculates dependents)         |
-| `getData()`            | All non-empty cells as `{ ref, raw, value }[]`           |
+| Method                 | Description                                                        |
+| ---------------------- | ------------------------------------------------------------------ |
+| `getCell(ref)`         | `{ raw, value, error? }` for an A1-style ref, or `null`            |
+| `setCell(ref, raw)`    | Write a cell (undoable, recalculates dependents)                   |
+| `getData()`            | All non-empty cells as `{ ref, raw, value, display }[]`            |
+| `getSnapshot()`        | Full serializable grid state (`{ cells, styles, colWidths }`), JSON-safe for persistence |
 
 ## Interactions
 
 - **Select**: click, drag, Shift+click / Shift+arrows, row/column header click or drag (multi-row/column), Ctrl/Cmd+A.
+- **Search**: the toolbar's search box live-highlights matches, scoped to the columns of the current grid selection (no separate scope control).
 - **Context menus**: right-click a cell, row header, or column header. Cells: cut/copy/paste, insert/delete rows & columns, sort the selected range, filter by cell value, clear filter. Row/column headers: cut/copy/paste, insert/delete/move/hide/unhide lines, freeze/unfreeze panes, and (columns) sort the sheet by that column. Insert/delete/move rewrite formula references sheet-wide (references to deleted lines become `#REF!`) and undo as one step.
 - **Navigate**: arrows, Tab/Shift+Tab, Enter/Shift+Enter, Home, Ctrl/Cmd+Home, PageUp/PageDown.
 - **Edit**: double-click, F2, or just start typing; Enter/Tab commit (moving down/right), Escape cancels; Delete clears the selection; the formula bar edits the active cell.
@@ -87,6 +91,22 @@ Dependents recalculate automatically. Errors follow Excel conventions:
 `#NAME?`, `#VALUE!`, `#DIV/0!`, `#REF!`, and `#CYCLE!` for circular
 references.
 
+## Persistence & file import/export
+
+The package exports helpers for host-app persistence and interop, on top of
+`getSnapshot()` / `initialState`:
+
+| Export                        | Description                                                        |
+| ------------------------------ | ------------------------------------------------------------------ |
+| `toCSV(rows)` / `parseCSV(text)` | Convert between a `string[][]` matrix and CSV text                |
+| `snapshotToXlsx(snapshot, opts?)` | Zero-dependency `GridSnapshot` → `.xlsx` bytes (`Promise<Uint8Array>`), preserving formulas, styles, number formats, and column widths |
+| `xlsxToSnapshot(bytes)`        | Zero-dependency `.xlsx` bytes → `GridSnapshot` (`Promise<GridSnapshot>`) |
+
+The demo app (`npm run dev`) shows a full example: New/Open…/Save CSV/Save
+XLSX buttons, content-sniffed file opening (`.xlsx` detected by PK magic
+bytes, not extension), and debounced localStorage autosave driven by
+`onStateChange` + `getSnapshot()`.
+
 ## Development
 
 ```sh
@@ -99,7 +119,7 @@ npm run build      # dist/ (ESM + CJS + d.ts + styles.css)
 ## Not (yet) included
 
 Merged cells, borders, format painter, font family, row resize, autofilter
-dropdowns (only filter-by-value), multi-sheet workbooks, `.xlsx`
-import/export, touch gestures. Cell styles are display-only and not exposed
-through `getData()`. Sorting moves raw content only (styles and formula
-references are not rewritten by sort).
+dropdowns (only filter-by-value), multi-sheet workbooks, touch gestures.
+Cell styles are display-only and not exposed through `getData()` (use
+`getSnapshot()` for styles). Sorting moves raw content only (styles and
+formula references are not rewritten by sort).
