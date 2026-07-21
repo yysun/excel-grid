@@ -576,6 +576,16 @@
   z-index: 1;
 }
 
+.xg-resize-grip--row {
+  top: auto;
+  right: 0;
+  bottom: -3px;
+  left: 0;
+  width: 100%;
+  height: 7px;
+  cursor: row-resize;
+}
+
 /* Body */
 .xg-bodywrap {
   position: relative;

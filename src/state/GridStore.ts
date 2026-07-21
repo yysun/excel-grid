@@ -68,6 +68,7 @@ interface SheetSnapshot {
   raws: Map<string, string>;
   styles: Map<string, CellStyle>;
   colWidths: Map<number, number>;
+  rowHeights: Map<number, number>;
   hiddenRows: Set<number>;
   hiddenCols: Set<number>;
   filterCols: Set<number>;
@@ -105,6 +106,8 @@ export class GridStore {
   private undoStack: Patch[][] = [];
   private redoStack: Patch[][] = [];
   private colWidths = new Map<number, number>();
+  /** Manually set row heights (explicit overrides win over auto-fit). */
+  private rowHeights = new Map<number, number>();
   /** Manually hidden lines (view state; remapped by structural edits). */
   private hiddenRows = new Set<number>();
   private hiddenCols = new Set<number>();
@@ -132,7 +135,8 @@ export class GridStore {
   constructor(
     public readonly rowCount: number,
     public readonly colCount: number,
-    public readonly defaultColWidth: number
+    public readonly defaultColWidth: number,
+    public readonly defaultRowHeight: number = 24
   ) {}
 
   // ---- subscription ----
@@ -237,7 +241,9 @@ export class GridStore {
     }
     const colWidths: Record<number, number> = {};
     for (const [col, width] of this.colWidths) colWidths[col] = width;
-    return { cells, styles, colWidths };
+    const rowHeights: Record<number, number> = {};
+    for (const [row, height] of this.rowHeights) rowHeights[row] = height;
+    return { cells, styles, colWidths, rowHeights };
   }
 
   /**
@@ -256,6 +262,31 @@ export class GridStore {
   setColWidth(col: number, width: number): void {
     this.colWidths.set(col, Math.max(30, width));
     this.notify([]);
+  }
+
+  getRowHeight(row: number): number {
+    return this.rowHeights.get(row) ?? this.defaultRowHeight;
+  }
+
+  /** True when `row`'s height was explicitly set (drag-resize), not auto-fit. */
+  hasRowHeightOverride(row: number): boolean {
+    return this.rowHeights.has(row);
+  }
+
+  setRowHeight(row: number, height: number): void {
+    const h = Math.max(15, height);
+    if (this.rowHeights.get(row) === h) return;
+    this.rowHeights.set(row, h);
+    this.notify([]);
+  }
+
+  /** Cells whose style has word-wrap enabled, for host-side row auto-fit. */
+  getWrapCells(): Array<{ row: number; col: number }> {
+    const out: Array<{ row: number; col: number }> = [];
+    for (const [key, style] of this.styles) {
+      if (style.wrap) out.push(parseKey(key));
+    }
+    return out;
   }
 
   getStyle(row: number, col: number): CellStyle | null {
@@ -529,6 +560,7 @@ export class GridStore {
       raws: new Map(),
       styles: new Map(),
       colWidths: axis === "col" ? new Map() : new Map(this.colWidths),
+      rowHeights: axis === "row" ? new Map() : new Map(this.rowHeights),
       hiddenRows: axis === "row" ? new Set() : new Set(this.hiddenRows),
       hiddenCols: axis === "col" ? new Set() : new Set(this.hiddenCols),
       filterCols: axis === "col" ? new Set() : new Set(this.filterCols),
@@ -573,6 +605,12 @@ export class GridStore {
         }
       }
     } else {
+      for (const [row, height] of this.rowHeights) {
+        const mapped = map(row);
+        if (mapped !== null && mapped >= 0 && mapped < count) {
+          after.rowHeights.set(mapped, height);
+        }
+      }
       for (const row of this.hiddenRows) {
         const mapped = map(row);
         if (mapped !== null && mapped >= 0 && mapped < count) {
@@ -595,6 +633,7 @@ export class GridStore {
       raws,
       styles: new Map([...this.styles].map(([k, v]) => [k, { ...v }])),
       colWidths: new Map(this.colWidths),
+      rowHeights: new Map(this.rowHeights),
       hiddenRows: new Set(this.hiddenRows),
       hiddenCols: new Set(this.hiddenCols),
       filterCols: new Set(this.filterCols),
@@ -614,6 +653,7 @@ export class GridStore {
     this.rangeDeps = [];
     this.styles = new Map([...snap.styles].map(([k, v]) => [k, { ...v }]));
     this.colWidths = new Map(snap.colWidths);
+    this.rowHeights = new Map(snap.rowHeights);
     this.hiddenRows = new Set(snap.hiddenRows);
     this.hiddenCols = new Set(snap.hiddenCols);
     this.filterCols = new Set(snap.filterCols);
@@ -1026,6 +1066,7 @@ function sheetSnapshotsEqual(a: SheetSnapshot, b: SheetSnapshot): boolean {
     mapsEqual(a.raws, b.raws, (p, q) => p === q) &&
     mapsEqual(a.styles, b.styles, stylesEqual) &&
     mapsEqual(a.colWidths, b.colWidths, (p, q) => p === q) &&
+    mapsEqual(a.rowHeights, b.rowHeights, (p, q) => p === q) &&
     setsEqual(a.hiddenRows, b.hiddenRows) &&
     setsEqual(a.hiddenCols, b.hiddenCols) &&
     setsEqual(a.filterCols, b.filterCols) &&

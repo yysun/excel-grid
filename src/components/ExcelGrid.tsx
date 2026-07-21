@@ -58,6 +58,34 @@ import { useSyncExternalStore } from "react";
 
 const HEADER_HEIGHT = 24;
 const ROW_HEADER_WIDTH = 46;
+const CELL_FONT_STACK =
+  '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif';
+/** Horizontal padding (both sides) reserved by .xg-cell in styles.css. */
+const CELL_H_PADDING = 8;
+
+let measureCtx: CanvasRenderingContext2D | null = null;
+
+/** Approximate wrapped line count for `text` at `font` within `maxWidth`. */
+function countWrappedLines(text: string, font: string, maxWidth: number): number {
+  if (!measureCtx) {
+    measureCtx = document.createElement("canvas").getContext("2d");
+  }
+  if (!measureCtx || maxWidth <= 0) return 1;
+  measureCtx.font = font;
+  let lines = 1;
+  let lineWidth = 0;
+  for (const word of text.split(/(\s+)/)) {
+    if (word === "") continue;
+    const w = measureCtx.measureText(word).width;
+    if (lineWidth > 0 && lineWidth + w > maxWidth) {
+      lines++;
+      lineWidth = /^\s+$/.test(word) ? 0 : w;
+    } else {
+      lineWidth += w;
+    }
+  }
+  return Math.max(1, lines);
+}
 
 interface Selection {
   anchor: CellCoord;
@@ -104,7 +132,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
 
     const storeRef = useRef<GridStore | null>(null);
     if (storeRef.current === null) {
-      const store = new GridStore(rows, cols, defaultColWidth);
+      const store = new GridStore(rows, cols, defaultColWidth, rowHeight);
       const seedCells = (source: Record<string, string>) => {
         const changes: RawChange[] = [];
         for (const [refText, raw] of Object.entries(source)) {
@@ -127,6 +155,9 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         for (const [col, width] of Object.entries(initialState.colWidths ?? {})) {
           // JSON round-trips numeric keys as strings.
           if (typeof width === "number") store.setColWidth(Number(col), width);
+        }
+        for (const [row, height] of Object.entries(initialState.rowHeights ?? {})) {
+          if (typeof height === "number") store.setRowHeight(Number(row), height);
         }
       }
       storeRef.current = store;
@@ -180,13 +211,28 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       [store, cols, version]
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    const rowHeights = useMemo(
-      () =>
-        Array.from({ length: rows }, (_, i) =>
-          store.isRowHidden(i) ? 0 : rowHeight
-        ),
-      [store, rows, rowHeight, version]
-    );
+    const rowHeights = useMemo(() => {
+      const heights = Array.from({ length: rows }, (_, i) =>
+        store.isRowHidden(i) ? 0 : store.getRowHeight(i)
+      );
+      // Auto-fit rows containing wrapped text that the user hasn't manually
+      // resized (a drag-resize always wins, like Excel's own behavior).
+      for (const { row, col } of store.getWrapCells()) {
+        if (row < 0 || row >= rows || col < 0 || col >= cols) continue;
+        if (heights[row] === 0 || store.hasRowHeightOverride(row)) continue;
+        const width = colWidths[col];
+        if (width <= 0) continue;
+        const text = store.getDisplay(row, col);
+        if (!text) continue;
+        const style = store.getStyle(row, col);
+        const fontSize = style?.fontSize ?? 13;
+        const font = `${style?.bold ? "600 " : ""}${fontSize}px ${CELL_FONT_STACK}`;
+        const lines = countWrappedLines(text, font, width - CELL_H_PADDING);
+        const needed = Math.ceil(lines * fontSize * 1.35) + 6;
+        if (needed > heights[row]) heights[row] = needed;
+      }
+      return heights;
+    }, [store, rows, cols, colWidths, version]);
     const colMetrics = useMemo(() => buildAxisMetrics(colWidths), [colWidths]);
     const rowMetrics = useMemo(() => buildAxisMetrics(rowHeights), [rowHeights]);
 
@@ -691,6 +737,25 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       [store]
     );
 
+    const beginRowResizeDrag = useCallback(
+      (e: React.MouseEvent, row: number) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const startY = e.clientY;
+        const startHeight = store.getRowHeight(row);
+        const onMove = (ev: MouseEvent) => {
+          store.setRowHeight(row, startHeight + (ev.clientY - startY));
+        };
+        const onUp = () => {
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      },
+      [store]
+    );
+
     const selectColumn = useCallback(
       (col: number) => {
         setSelection({
@@ -1151,6 +1216,10 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
           onContextMenu={(e) => handleHeaderContextMenu("row", row, e)}
         >
           {row + 1}
+          <div
+            className="xg-resize-grip xg-resize-grip--row"
+            onMouseDown={(e) => beginRowResizeDrag(e, row)}
+          />
         </div>
       );
     };

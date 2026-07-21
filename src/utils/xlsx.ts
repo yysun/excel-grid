@@ -374,7 +374,12 @@ export async function snapshotToXlsx(
         );
       }
     }
-    rowsXml.push(`<row r="${row + 1}">${cells.join("")}</row>`);
+    const htPx = snapshot.rowHeights?.[row];
+    const rowAttrs =
+      typeof htPx === "number"
+        ? ` ht="${+(htPx * 0.75).toFixed(2)}" customHeight="1"`
+        : "";
+    rowsXml.push(`<row r="${row + 1}"${rowAttrs}>${cells.join("")}</row>`);
   }
 
   const sheetXml =
@@ -651,6 +656,7 @@ export async function xlsxToSnapshot(
   const cells: Record<string, string> = {};
   const styles: Record<string, CellStyle> = {};
   const colWidths: Record<number, number> = {};
+  const rowHeights: Record<number, number> = {};
 
   // Column widths (character units -> px, inverse of the writer formula).
   for (const col of tags(sheet, "col")) {
@@ -675,6 +681,15 @@ export async function xlsxToSnapshot(
   for (const rowEl of tags(sheet, "row")) {
     const r = Number(rowEl.getAttribute("r"));
     rowIdx = Number.isFinite(r) && r >= 1 ? r - 1 : rowIdx + 1;
+    const ht = Number(rowEl.getAttribute("ht"));
+    const customHt = rowEl.getAttribute("customHeight");
+    if (
+      Number.isFinite(ht) &&
+      ht > 0 &&
+      (customHt === "1" || customHt === "true")
+    ) {
+      rowHeights[rowIdx] = Math.round(ht * (4 / 3));
+    }
     let colIdx = -1;
     for (const c of tags(rowEl, "c")) {
       const refAttr = c.getAttribute("r");
@@ -745,5 +760,5 @@ export async function xlsxToSnapshot(
     }
   }
 
-  return { cells, styles, colWidths };
+  return { cells, styles, colWidths, rowHeights };
 }

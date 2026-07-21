@@ -85,7 +85,7 @@ function snapshotFromCSV(text: string): GridSnapshot {
       cells[`${colToLetters(c)}${r + 1}`] = field.startsWith("=") ? `'${field}` : field;
     });
   });
-  return { cells, styles: {}, colWidths: {} };
+  return { cells, styles: {}, colWidths: {}, rowHeights: {} };
 }
 
 function App() {

@@ -31,12 +31,18 @@ describe("getSnapshot", () => {
       cells: { A1: "hello", B2: "=1+2" },
       styles: { A1: { bold: true, numFmt: "currency" } },
       colWidths: { 0: 150 },
+      rowHeights: {},
     });
   });
 
   it("is empty for a fresh store and JSON round-trips", () => {
     const store = makeStore();
-    expect(store.getSnapshot()).toEqual({ cells: {}, styles: {}, colWidths: {} });
+    expect(store.getSnapshot()).toEqual({
+      cells: {},
+      styles: {},
+      colWidths: {},
+      rowHeights: {},
+    });
 
     store.setCells([{ row: 2, col: 3, raw: "x" }]);
     store.applyStyle(cell(2, 3), { italic: true });

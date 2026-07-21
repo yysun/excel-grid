@@ -170,6 +170,7 @@ describe("snapshotToXlsx -> xlsxToSnapshot round-trip", () => {
       E5: { background: "#00ff00" }, // style-only empty cell
     },
     colWidths: { 0: 150, 2: 80 },
+    rowHeights: {},
   };
 
   it("preserves display values, styles, and column widths", async () => {
@@ -221,7 +222,12 @@ describe("snapshotToXlsx -> xlsxToSnapshot round-trip", () => {
   it("caches empty (not #REF!) for refs beyond the used range", async () => {
     // A1 references empty C1 outside the 1x1 used range; the cached value
     // must match what the real (larger) grid shows, not a bounds error.
-    const snap: GridSnapshot = { cells: { A1: "=C1" }, styles: {}, colWidths: {} };
+    const snap: GridSnapshot = {
+      cells: { A1: "=C1" },
+      styles: {},
+      colWidths: {},
+      rowHeights: {},
+    };
     const bytes = await snapshotToXlsx(snap);
     const back = await xlsxToSnapshot(bytes);
     expect(back.cells.A1).toBe("=C1");
@@ -237,6 +243,7 @@ describe("snapshotToXlsx -> xlsxToSnapshot round-trip", () => {
       cells: { A1: "=XLOOKUP(1,B1:B9,C1:C9)" },
       styles: {},
       colWidths: {},
+      rowHeights: {},
     };
     const once = await xlsxToSnapshot(await snapshotToXlsx(snap));
     expect(once.cells.A1).toBe("=XLOOKUP(1,B1:B9,C1:C9)");

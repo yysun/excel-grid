@@ -90,6 +90,7 @@ export interface GridSnapshot {
   cells: Record<string, string>;
   styles: Record<string, CellStyle>;
   colWidths: Record<number, number>;
+  rowHeights: Record<number, number>;
 }
 
 /** One changed cell reported through onChange. */
