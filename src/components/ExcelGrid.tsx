@@ -76,10 +76,26 @@ function countWrappedLines(text: string, font: string, maxWidth: number): number
   let lineWidth = 0;
   for (const word of text.split(/(\s+)/)) {
     if (word === "") continue;
+    const isSpace = /^\s+$/.test(word);
     const w = measureCtx.measureText(word).width;
+    if (!isSpace && w > maxWidth) {
+      // Word (or spaceless CJK run) is wider than the cell: word-break:
+      // break-word wraps it mid-character in the browser, so simulate
+      // that here instead of treating it as one unbreakable unit.
+      for (const ch of word) {
+        const cw = measureCtx.measureText(ch).width;
+        if (lineWidth > 0 && lineWidth + cw > maxWidth) {
+          lines++;
+          lineWidth = cw;
+        } else {
+          lineWidth += cw;
+        }
+      }
+      continue;
+    }
     if (lineWidth > 0 && lineWidth + w > maxWidth) {
       lines++;
-      lineWidth = /^\s+$/.test(word) ? 0 : w;
+      lineWidth = isSpace ? 0 : w;
     } else {
       lineWidth += w;
     }
