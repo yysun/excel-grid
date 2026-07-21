@@ -99,13 +99,17 @@ The package exports helpers for host-app persistence and interop, on top of
 | Export                        | Description                                                        |
 | ------------------------------ | ------------------------------------------------------------------ |
 | `toCSV(rows)` / `parseCSV(text)` | Convert between a `string[][]` matrix and CSV text                |
-| `snapshotToXlsx(snapshot, opts?)` | Zero-dependency `GridSnapshot` → `.xlsx` bytes (`Promise<Uint8Array>`), preserving formulas, styles, number formats, and column widths |
-| `xlsxToSnapshot(bytes)`        | Zero-dependency `.xlsx` bytes → `GridSnapshot` (`Promise<GridSnapshot>`) |
+| `snapshotToXlsx(snapshot, opts?)` | Zero-dependency `GridSnapshot` → `.xlsx` bytes (`Promise<Uint8Array>`), preserving formulas, styles, number formats, and column widths (single sheet) |
+| `xlsxToSnapshot(bytes)`        | Zero-dependency `.xlsx` bytes → `GridSnapshot` (`Promise<GridSnapshot>`, first sheet only) |
+| `workbookToXlsx(sheets)`       | `XlsxSheet[]` (`{ name, snapshot }[]`) → `.xlsx` bytes (`Promise<Uint8Array>`), all sheets in one workbook sharing an interned style table |
+| `xlsxToWorkbook(bytes)`        | `.xlsx` bytes → `XlsxSheet[]` (`Promise<XlsxSheet[]>`), every sheet in workbook order |
 
 The demo app (`npm run dev`) shows a full example: New/Open…/Save CSV/Save
-XLSX buttons, content-sniffed file opening (`.xlsx` detected by PK magic
-bytes, not extension), and debounced localStorage autosave driven by
-`onStateChange` + `getSnapshot()`.
+XLSX buttons, a sheet-tab row (switch/add/rename/delete sheets),
+content-sniffed file opening (`.xlsx` detected by PK magic bytes, not
+extension) that loads every sheet of a workbook, and debounced localStorage
+autosave (all sheets + active sheet) driven by `onStateChange` +
+`getSnapshot()`.
 
 ## Development
 
@@ -119,7 +123,8 @@ npm run build      # dist/ (ESM + CJS + d.ts + styles.css)
 ## Not (yet) included
 
 Merged cells, borders, format painter, font family, row resize, autofilter
-dropdowns (only filter-by-value), multi-sheet workbooks, touch gestures.
+dropdowns (only filter-by-value), cross-sheet formula references
+(`=Sheet2!A1`), sheet tab reordering, touch gestures.
 Cell styles are display-only and not exposed through `getData()` (use
 `getSnapshot()` for styles). Sorting moves raw content only (styles and
 formula references are not rewritten by sort).

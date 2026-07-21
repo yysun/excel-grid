@@ -4,7 +4,9 @@
 // in the namespaced stylesheet (bundled to dist/styles.css).
 // Recent changes: exported the xlsx helpers snapshotToXlsx/xlsxToSnapshot
 // (zero-dependency Excel .xlsx open/save on GridSnapshot) alongside the
-// CSV helpers toCSV/parseCSV for host-app file import/export.
+// CSV helpers toCSV/parseCSV for host-app file import/export. Added
+// workbookToXlsx/xlsxToWorkbook and the XlsxSheet type for multi-sheet
+// .xlsx workbooks.
 
 import "./styles.css";
 
@@ -22,6 +24,7 @@ export type {
   HAlign,
   NumFmt,
   VAlign,
+  XlsxSheet,
 } from "./types";
 export {
   colToLetters,
@@ -31,4 +34,10 @@ export {
   parseRange,
 } from "./utils/cellRef";
 export { toCSV, parseCSV } from "./utils/tsv";
-export { snapshotToXlsx, xlsxToSnapshot, type XlsxOptions } from "./utils/xlsx";
+export {
+  snapshotToXlsx,
+  xlsxToSnapshot,
+  workbookToXlsx,
+  xlsxToWorkbook,
+  type XlsxOptions,
+} from "./utils/xlsx";

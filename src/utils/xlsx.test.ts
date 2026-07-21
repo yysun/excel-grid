@@ -14,9 +14,16 @@ import {
 } from "node:stream/web";
 import { describe, expect, it } from "vitest";
 import { GridStore, type RawChange } from "../state/GridStore";
-import type { GridSnapshot } from "../types";
+import type { GridSnapshot, XlsxSheet } from "../types";
 import { parseCellRef } from "./cellRef";
-import { numFmtFor, numFmtToStyle, snapshotToXlsx, xlsxToSnapshot } from "./xlsx";
+import {
+  numFmtFor,
+  numFmtToStyle,
+  snapshotToXlsx,
+  workbookToXlsx,
+  xlsxToSnapshot,
+  xlsxToWorkbook,
+} from "./xlsx";
 import { readZip } from "./zip";
 
 const g = globalThis as Record<string, unknown>;
@@ -249,6 +256,51 @@ describe("snapshotToXlsx -> xlsxToSnapshot round-trip", () => {
     expect(once.cells.A1).toBe("=XLOOKUP(1,B1:B9,C1:C9)");
     const twice = await xlsxToSnapshot(await snapshotToXlsx(once));
     expect(twice.cells.A1).toBe("=XLOOKUP(1,B1:B9,C1:C9)");
+  });
+});
+
+// ---- multi-sheet ----
+
+describe("workbookToXlsx -> xlsxToWorkbook round-trip", () => {
+  const blank: GridSnapshot = { cells: {}, styles: {}, colWidths: {}, rowHeights: {} };
+
+  it("preserves sheet count, names, order, and per-sheet content", async () => {
+    const sheets: XlsxSheet[] = [
+      { name: "Revenue", snapshot: { ...blank, cells: { A1: "100" } } },
+      { name: "Costs", snapshot: { ...blank, cells: { A1: "50" } } },
+      { name: "Sheet 3!", snapshot: { ...blank, cells: { B2: "=1+1" } } },
+    ];
+    const bytes = await workbookToXlsx(sheets);
+    const back = await xlsxToWorkbook(bytes);
+
+    expect(back).toHaveLength(3);
+    expect(back.map((s) => s.name)).toEqual(["Revenue", "Costs", "Sheet 3!"]);
+    expect(back[0].snapshot.cells.A1).toBe("100");
+    expect(back[1].snapshot.cells.A1).toBe("50");
+    expect(back[2].snapshot.cells.B2).toBe("=1+1");
+  });
+
+  it("does not leak a style used on one sheet onto another", async () => {
+    const sheets: XlsxSheet[] = [
+      { name: "A", snapshot: { ...blank, cells: { A1: "x" }, styles: { A1: { bold: true } } } },
+      { name: "B", snapshot: { ...blank, cells: { A1: "y" } } },
+    ];
+    const bytes = await workbookToXlsx(sheets);
+    const back = await xlsxToWorkbook(bytes);
+
+    expect(back[0].snapshot.styles.A1).toEqual({ bold: true });
+    expect(back[1].snapshot.styles.A1).toBeUndefined();
+  });
+
+  it("keeps snapshotToXlsx/xlsxToSnapshot behavior identical to the single-sheet case", async () => {
+    const snapshot: GridSnapshot = { ...blank, cells: { A1: "hi" } };
+    const singleBytes = await snapshotToXlsx(snapshot);
+    const workbookBytes = await workbookToXlsx([{ name: "Sheet1", snapshot }]);
+    expect(await xlsxToSnapshot(singleBytes)).toEqual(await xlsxToSnapshot(workbookBytes));
+
+    const viaWorkbook = await xlsxToWorkbook(singleBytes);
+    expect(viaWorkbook).toHaveLength(1);
+    expect(viaWorkbook[0]).toEqual({ name: "Sheet1", snapshot });
   });
 });
 

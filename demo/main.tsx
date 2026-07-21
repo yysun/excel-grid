@@ -1,15 +1,22 @@
 // Demo app for excel-grid.
 // Features: localStorage persistence keyed by file name — every edit
-// (data, formatting, column widths) autosaves a GridSnapshot under
+// (data, formatting, column widths) autosaves all sheets of the current
+// document as { sheets: XlsxSheet[], activeIndex } under
 // "excel-grid-demo:file:{fileName}" (300 ms debounce, flushed on
 // pagehide/hidden); boot restores the last file ("excel-grid-demo:current")
-// or shows a blank grid; header buttons: New (confirm + clear), Open…
-// (File API; .xlsx detected by PK magic bytes — content only, never by
-// extension — else CSV with imported "=" cells apostrophe-escaped), Save CSV
-// (displayed text of the used range), Save XLSX (full-fidelity snapshot
-// via snapshotToXlsx); onChange event log.
-// Recent changes: added xlsx open/save (content-sniffed Open…, Save XLSX
-// button; open failures alert and keep the current document).
+// or shows a blank single-sheet grid; header buttons: New (confirm + clear),
+// Open… (File API; .xlsx detected by PK magic bytes — content only, never by
+// extension — else CSV with imported "=" cells apostrophe-escaped, always
+// producing a single sheet), Save CSV (displayed text of the active sheet's
+// used range), Save XLSX (full-fidelity multi-sheet workbook via
+// workbookToXlsx); a sheet-tab row (switch/add/rename/delete, always >=1
+// sheet); onChange event log.
+// Recent changes: multi-sheet support — Open/Save XLSX now round-trip every
+// sheet in a workbook (via xlsxToWorkbook/workbookToXlsx) instead of just
+// the first, and a sheet-tab UI lets the user switch, add, rename, and
+// delete sheets. Persistence schema changed from a single GridSnapshot to
+// { sheets, activeIndex }; old-format entries fall back to a blank document
+// (same as corrupt JSON) since there is no migration requirement.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -18,12 +25,13 @@ import {
   colToLetters,
   parseCellRef,
   parseCSV,
-  snapshotToXlsx,
   toCSV,
-  xlsxToSnapshot,
+  workbookToXlsx,
+  xlsxToWorkbook,
   type ExcelGridHandle,
   type GridChange,
   type GridSnapshot,
+  type XlsxSheet,
 } from "../src/index";
 
 const DEFAULT_FILE_NAME = "untitled.csv";
@@ -35,9 +43,31 @@ const BLANK_COLS = 26;
 
 interface DocState {
   fileName: string;
-  snapshot: GridSnapshot | null;
+  sheets: XlsxSheet[];
+  activeIndex: number;
   /** React key for ExcelGrid: bump to remount with fresh initial state. */
   epoch: number;
+}
+
+function blankSnapshot(): GridSnapshot {
+  return { cells: {}, styles: {}, colWidths: {}, rowHeights: {} };
+}
+
+function blankDoc(fileName: string, epoch: number): DocState {
+  return {
+    fileName,
+    sheets: [{ name: "Sheet1", snapshot: blankSnapshot() }],
+    activeIndex: 0,
+    epoch,
+  };
+}
+
+/** First unused "SheetN" name, N starting at sheets.length + 1. */
+function nextDefaultName(sheets: XlsxSheet[]): string {
+  const used = new Set(sheets.map((s) => s.name));
+  let n = sheets.length + 1;
+  while (used.has(`Sheet${n}`)) n++;
+  return `Sheet${n}`;
 }
 
 function loadInitialDoc(): DocState {
@@ -45,15 +75,21 @@ function loadInitialDoc(): DocState {
     const fileName = localStorage.getItem(CURRENT_KEY) ?? DEFAULT_FILE_NAME;
     const json = localStorage.getItem(fileKey(fileName));
     if (json) {
-      const snapshot = JSON.parse(json) as GridSnapshot;
-      if (snapshot && typeof snapshot === "object" && snapshot.cells) {
-        return { fileName, snapshot, epoch: 0 };
+      const parsed = JSON.parse(json) as { sheets?: unknown; activeIndex?: unknown };
+      if (Array.isArray(parsed.sheets) && parsed.sheets.length > 0) {
+        const activeIndex =
+          typeof parsed.activeIndex === "number" &&
+          parsed.activeIndex >= 0 &&
+          parsed.activeIndex < parsed.sheets.length
+            ? parsed.activeIndex
+            : 0;
+        return { fileName, sheets: parsed.sheets as XlsxSheet[], activeIndex, epoch: 0 };
       }
     }
-    return { fileName, snapshot: null, epoch: 0 };
+    return blankDoc(fileName, 0);
   } catch {
     // Corrupt stored JSON (or storage unavailable): start blank.
-    return { fileName: DEFAULT_FILE_NAME, snapshot: null, epoch: 0 };
+    return blankDoc(DEFAULT_FILE_NAME, 0);
   }
 }
 
@@ -94,20 +130,28 @@ function App() {
   const [doc, setDoc] = useState<DocState>(loadInitialDoc);
   const [log, setLog] = useState<string[]>([]);
 
-  const { rows, cols } = useMemo(() => gridSize(doc.snapshot), [doc]);
+  const activeSheet = doc.sheets[doc.activeIndex];
+  const { rows, cols } = useMemo(() => gridSize(activeSheet?.snapshot ?? null), [activeSheet]);
 
   // ---- autosave (debounced; flushed on pagehide / tab hidden) ----
 
   const saveTimer = useRef<number | null>(null);
-  const persistNow = () => {
-    const snapshot = gridRef.current?.getSnapshot();
-    if (!snapshot) return;
+
+  /** Write sheets/activeIndex to localStorage under the current file name. */
+  const persistSheets = (sheets: XlsxSheet[], activeIndex: number) => {
     try {
-      localStorage.setItem(fileKey(doc.fileName), JSON.stringify(snapshot));
+      localStorage.setItem(fileKey(doc.fileName), JSON.stringify({ sheets, activeIndex }));
       localStorage.setItem(CURRENT_KEY, doc.fileName);
     } catch (e) {
       console.error("excel-grid demo: autosave failed", e);
     }
+  };
+
+  const persistNow = () => {
+    const live = gridRef.current?.getSnapshot();
+    if (!live) return;
+    const sheets = doc.sheets.map((s, i) => (i === doc.activeIndex ? { ...s, snapshot: live } : s));
+    persistSheets(sheets, doc.activeIndex);
   };
   const persistRef = useRef(persistNow);
   persistRef.current = persistNow;
@@ -144,6 +188,61 @@ function App() {
     };
   }, []);
 
+  /** Current sheets with the live grid's edits merged into the active slot. */
+  const flushedSheets = (): XlsxSheet[] => {
+    const live = gridRef.current?.getSnapshot();
+    if (!live) return doc.sheets;
+    return doc.sheets.map((s, i) => (i === doc.activeIndex ? { ...s, snapshot: live } : s));
+  };
+
+  // ---- sheet actions ----
+
+  /** Cancel any pending debounced autosave (a fresh persist below supersedes it). */
+  const cancelPendingSave = () => {
+    if (saveTimer.current !== null) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+  };
+
+  const switchSheet = (index: number) => {
+    if (index === doc.activeIndex) return;
+    cancelPendingSave();
+    const sheets = flushedSheets();
+    persistSheets(sheets, index);
+    setDoc((d) => ({ ...d, sheets, activeIndex: index, epoch: d.epoch + 1 }));
+  };
+
+  const addSheet = () => {
+    cancelPendingSave();
+    const sheets = flushedSheets();
+    const name = nextDefaultName(sheets);
+    const next = [...sheets, { name, snapshot: blankSnapshot() }];
+    persistSheets(next, next.length - 1);
+    setDoc((d) => ({ ...d, sheets: next, activeIndex: next.length - 1, epoch: d.epoch + 1 }));
+  };
+
+  const renameSheet = (index: number) => {
+    const current = doc.sheets[index];
+    const name = window.prompt("Sheet name:", current.name);
+    if (!name || name === current.name) return;
+    cancelPendingSave();
+    const sheets = doc.sheets.map((s, i) => (i === index ? { ...s, name } : s));
+    persistSheets(sheets, doc.activeIndex);
+    setDoc((d) => ({ ...d, sheets }));
+  };
+
+  const deleteSheet = (index: number) => {
+    if (doc.sheets.length <= 1) return;
+    if (!window.confirm(`Delete sheet "${doc.sheets[index].name}"?`)) return;
+    cancelPendingSave();
+    const sheets = (index === doc.activeIndex ? doc.sheets : flushedSheets()).filter((_, i) => i !== index);
+    const activeIndex =
+      index < doc.activeIndex ? doc.activeIndex - 1 : Math.min(doc.activeIndex, sheets.length - 1);
+    persistSheets(sheets, activeIndex);
+    setDoc((d) => ({ ...d, sheets, activeIndex, epoch: d.epoch + 1 }));
+  };
+
   // ---- file actions ----
 
   const openFile = async (file: File) => {
@@ -155,25 +254,25 @@ function App() {
     const isZip =
       bytes.length >= 4 &&
       bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
-    let snapshot: GridSnapshot;
+    let sheets: XlsxSheet[];
     if (isZip) {
       try {
-        snapshot = await xlsxToSnapshot(bytes);
+        sheets = await xlsxToWorkbook(bytes);
       } catch (e) {
         console.error("excel-grid demo: opening xlsx failed", e);
         window.alert(`Could not open "${file.name}" as an Excel file.`);
         return;
       }
     } else {
-      snapshot = snapshotFromCSV(new TextDecoder().decode(bytes));
+      sheets = [{ name: "Sheet1", snapshot: snapshotFromCSV(new TextDecoder().decode(bytes)) }];
     }
     try {
-      localStorage.setItem(fileKey(file.name), JSON.stringify(snapshot));
+      localStorage.setItem(fileKey(file.name), JSON.stringify({ sheets, activeIndex: 0 }));
       localStorage.setItem(CURRENT_KEY, file.name);
     } catch (e) {
       console.error("excel-grid demo: persisting opened file failed", e);
     }
-    setDoc((d) => ({ fileName: file.name, snapshot, epoch: d.epoch + 1 }));
+    setDoc((d) => ({ fileName: file.name, sheets, activeIndex: 0, epoch: d.epoch + 1 }));
   };
 
   const saveCSV = () => {
@@ -201,9 +300,8 @@ function App() {
   };
 
   const saveXLSX = async () => {
-    const snapshot = gridRef.current?.getSnapshot();
-    if (!snapshot) return;
-    const bytes = await snapshotToXlsx(snapshot);
+    const sheets = flushedSheets();
+    const bytes = await workbookToXlsx(sheets);
     downloadBlob(
       // Copy-construct: TS types the returned bytes as ArrayBufferLike-
       // backed, which Blob's BlobPart rejects; the copy is ArrayBuffer-backed.
@@ -237,7 +335,7 @@ function App() {
     } catch (e) {
       console.error("excel-grid demo: resetting storage failed", e);
     }
-    setDoc((d) => ({ fileName: DEFAULT_FILE_NAME, snapshot: null, epoch: d.epoch + 1 }));
+    setDoc((d) => blankDoc(DEFAULT_FILE_NAME, d.epoch + 1));
   };
 
   // ---- change log ----
@@ -276,13 +374,49 @@ function App() {
           }}
         />
       </div>
+      <div id="sheet-tabs" style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+        {doc.sheets.map((sheet, i) => (
+          <div
+            key={i}
+            onClick={() => switchSheet(i)}
+            onDoubleClick={() => renameSheet(i)}
+            title="Click to switch, double-click to rename"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "2px 4px 2px 8px",
+              borderRadius: 4,
+              cursor: "pointer",
+              background: i === doc.activeIndex ? "#dbeafe" : "#f0f0f0",
+              fontWeight: i === doc.activeIndex ? 600 : 400,
+              userSelect: "none",
+            }}
+          >
+            <span>{sheet.name}</span>
+            {doc.sheets.length > 1 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteSheet(i);
+                }}
+                title="Delete sheet"
+                style={{ border: "none", background: "transparent", cursor: "pointer", padding: "0 4px" }}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        ))}
+        <button onClick={addSheet} title="Add sheet">+</button>
+      </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <ExcelGrid
           key={doc.epoch}
           ref={gridRef}
           rows={rows}
           cols={cols}
-          initialState={doc.snapshot ?? undefined}
+          initialState={activeSheet?.snapshot}
           onChange={handleChange}
           onStateChange={handleStateChange}
         />

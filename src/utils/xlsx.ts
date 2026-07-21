@@ -1,19 +1,22 @@
 // Excel .xlsx (OOXML SpreadsheetML) serialization for GridSnapshot, with
 // zero runtime dependencies (ZIP layer in ./zip on native compression
 // streams, XML parsing via the platform DOMParser).
-// Features: snapshotToXlsx (single worksheet; inline strings; formulas
-// with cached values computed by a headless GridStore; styles.xml with
-// interned fonts/fills/number formats; column widths) and xlsxToSnapshot
-// (first worksheet; shared strings incl. rich-text runs; shared formulas
+// Features: workbookToXlsx (N named sheets; one shared interned styles.xml;
+// inline strings; formulas with cached values computed by a headless
+// GridStore; column widths) and xlsxToWorkbook (every worksheet in
+// workbook order; shared strings incl. rich-text runs; shared formulas
 // expanded via adjustFormula; builtin + custom number-format mapping back
 // to NumFmt; 1904 date system; apostrophe-escape guard for literal "="
-// strings). Unsupported inputs (theme/indexed colors, unknown format
-// codes) degrade to defaults instead of failing.
-// Recent changes: initial implementation.
+// strings). snapshotToXlsx/xlsxToSnapshot are single-sheet convenience
+// wrappers over the workbook functions, kept for backward compatibility.
+// Unsupported inputs (theme/indexed colors, unknown format codes) degrade
+// to defaults instead of failing.
+// Recent changes: added multi-sheet workbookToXlsx/xlsxToWorkbook; style
+// interning is now workbook-scoped and shared across sheets.
 
 import { adjustFormula } from "../formula/adjust";
 import { GridStore, type RawChange } from "../state/GridStore";
-import type { CellStyle, GridSnapshot, HAlign, VAlign } from "../types";
+import type { CellStyle, GridSnapshot, HAlign, VAlign, XlsxSheet } from "../types";
 import { formatCellRef, parseCellRef } from "./cellRef";
 import { createZip, readZip } from "./zip";
 
@@ -187,37 +190,8 @@ interface CellOut {
   styleIdx: number; // 0 = default xf
 }
 
-/**
- * Serialize a GridSnapshot to a complete .xlsx workbook (one sheet).
- * Formula cells carry cached values computed by a headless GridStore.
- */
-export async function snapshotToXlsx(
-  snapshot: GridSnapshot,
-  opts: XlsxOptions = {}
-): Promise<Uint8Array> {
-  const sheetName = opts.sheetName ?? "Sheet1";
-
-  // Collect the used range from cells + styles keys.
-  let maxRow = 0;
-  let maxCol = 0;
-  const changes: RawChange[] = [];
-  const byCoord = new Map<number, Map<number, CellOut>>();
-  const put = (row: number, col: number): CellOut => {
-    let r = byCoord.get(row);
-    if (!r) byCoord.set(row, (r = new Map()));
-    let c = r.get(col);
-    if (!c) r.set(col, (c = { raw: null, styleIdx: 0 }));
-    return c;
-  };
-  for (const [ref, raw] of Object.entries(snapshot.cells)) {
-    const p = parseCellRef(ref);
-    if (!p) continue;
-    maxRow = Math.max(maxRow, p.row);
-    maxCol = Math.max(maxCol, p.col);
-    changes.push({ row: p.row, col: p.col, raw });
-    put(p.row, p.col).raw = raw;
-  }
-
+/** Workbook-scoped style interner shared by every sheet in a workbook. */
+function createStyleInterner() {
   // Intern styles: numFmt codes -> ids from 164, fonts, fills, cellXfs.
   const customCodes = new Map<string, number>();
   const fonts: string[] = ['<font><sz val="11"/><name val="Calibri"/></font>'];
@@ -297,6 +271,35 @@ export async function snapshotToXlsx(
     return idx;
   };
 
+  return { customCodes, fonts, fills, xfs, internXf };
+}
+
+/**
+ * Build one worksheet's XML from a GridSnapshot, interning its styles
+ * through the given (workbook-scoped) internXf function.
+ */
+function buildSheetXml(snapshot: GridSnapshot, internXf: (style: CellStyle) => number): string {
+  // Collect the used range from cells + styles keys.
+  let maxRow = 0;
+  let maxCol = 0;
+  const changes: RawChange[] = [];
+  const byCoord = new Map<number, Map<number, CellOut>>();
+  const put = (row: number, col: number): CellOut => {
+    let r = byCoord.get(row);
+    if (!r) byCoord.set(row, (r = new Map()));
+    let c = r.get(col);
+    if (!c) r.set(col, (c = { raw: null, styleIdx: 0 }));
+    return c;
+  };
+  for (const [ref, raw] of Object.entries(snapshot.cells)) {
+    const p = parseCellRef(ref);
+    if (!p) continue;
+    maxRow = Math.max(maxRow, p.row);
+    maxCol = Math.max(maxCol, p.col);
+    changes.push({ row: p.row, col: p.col, raw });
+    put(p.row, p.col).raw = raw;
+  }
+
   for (const [ref, style] of Object.entries(snapshot.styles)) {
     const p = parseCellRef(ref);
     if (!p || Object.keys(style).length === 0) continue;
@@ -317,7 +320,6 @@ export async function snapshotToXlsx(
   );
   store.setCells(changes, false);
 
-  // ---- worksheet XML ----
   const cols = Object.entries(snapshot.colWidths)
     .map(([c, px]) => ({ col: Number(c), px }))
     .filter((e) => Number.isFinite(e.col) && e.col >= 0 && Number.isFinite(e.px))
@@ -382,14 +384,25 @@ export async function snapshotToXlsx(
     rowsXml.push(`<row r="${row + 1}"${rowAttrs}>${cells.join("")}</row>`);
   }
 
-  const sheetXml =
+  return (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
     colsXml +
     `<sheetData>${rowsXml.join("")}</sheetData>` +
-    "</worksheet>";
+    "</worksheet>"
+  );
+}
 
-  // ---- styles XML ----
+/**
+ * Serialize an ordered list of named sheets to a complete .xlsx workbook.
+ * All sheets share one interned styles.xml. Formula cells carry cached
+ * values computed by a headless GridStore.
+ */
+export async function workbookToXlsx(sheets: XlsxSheet[]): Promise<Uint8Array> {
+  const { customCodes, fonts, fills, xfs, internXf } = createStyleInterner();
+  const sheetXmls = sheets.map((s) => buildSheetXml(s.snapshot, internXf));
+
+  // ---- styles XML (shared across all sheets) ----
   const numFmtsXml = customCodes.size
     ? `<numFmts count="${customCodes.size}">` +
       [...customCodes]
@@ -413,7 +426,11 @@ export async function snapshotToXlsx(
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"' +
     ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
-    `<sheets><sheet name="${escXml(sheetName)}" sheetId="1" r:id="rId1"/></sheets>` +
+    "<sheets>" +
+    sheets
+      .map((s, i) => `<sheet name="${escXml(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`)
+      .join("") +
+    "</sheets>" +
     "</workbook>";
 
   const contentTypes =
@@ -422,7 +439,12 @@ export async function snapshotToXlsx(
     '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
     '<Default Extension="xml" ContentType="application/xml"/>' +
     '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
-    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+    sheets
+      .map(
+        (_, i) =>
+          `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+      )
+      .join("") +
     '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
     "</Types>";
 
@@ -432,11 +454,18 @@ export async function snapshotToXlsx(
     `<Relationship Id="rId1" Type="${NS_DOC_REL}/officeDocument" Target="xl/workbook.xml"/>` +
     "</Relationships>";
 
+  // Worksheet relationships get rId1..rIdN (matching the <sheet r:id> above);
+  // the shared styles relationship follows as rId(N+1).
   const workbookRels =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-    `<Relationship Id="rId1" Type="${NS_DOC_REL}/worksheet" Target="worksheets/sheet1.xml"/>` +
-    `<Relationship Id="rId2" Type="${NS_DOC_REL}/styles" Target="styles.xml"/>` +
+    sheets
+      .map(
+        (_, i) =>
+          `<Relationship Id="rId${i + 1}" Type="${NS_DOC_REL}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`
+      )
+      .join("") +
+    `<Relationship Id="rId${sheets.length + 1}" Type="${NS_DOC_REL}/styles" Target="styles.xml"/>` +
     "</Relationships>";
 
   const enc = new TextEncoder();
@@ -446,8 +475,22 @@ export async function snapshotToXlsx(
     { name: "xl/workbook.xml", data: enc.encode(workbookXml) },
     { name: "xl/_rels/workbook.xml.rels", data: enc.encode(workbookRels) },
     { name: "xl/styles.xml", data: enc.encode(stylesXml) },
-    { name: "xl/worksheets/sheet1.xml", data: enc.encode(sheetXml) },
+    ...sheetXmls.map((xml, i) => ({
+      name: `xl/worksheets/sheet${i + 1}.xml`,
+      data: enc.encode(xml),
+    })),
   ]);
+}
+
+/**
+ * Serialize a GridSnapshot to a complete .xlsx workbook (one sheet).
+ * Formula cells carry cached values computed by a headless GridStore.
+ */
+export async function snapshotToXlsx(
+  snapshot: GridSnapshot,
+  opts: XlsxOptions = {}
+): Promise<Uint8Array> {
+  return workbookToXlsx([{ name: opts.sheetName ?? "Sheet1", snapshot }]);
 }
 
 // ---- reader ----
@@ -593,66 +636,17 @@ function relTarget(rels: Document | null, typeSuffix: string): string | null {
 }
 
 /**
- * Parse the first worksheet of an .xlsx workbook into a GridSnapshot.
+ * Parse one worksheet XML element into a GridSnapshot, given the
+ * workbook-level shared strings, styles, and date system already resolved.
  * Values/formulas/styles/column widths are mapped to grid equivalents;
  * unsupported features degrade gracefully.
  */
-export async function xlsxToSnapshot(
-  data: ArrayBuffer | Uint8Array
-): Promise<GridSnapshot> {
-  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-  const parts = await readZip(bytes);
-  const dec = new TextDecoder();
-  const getXml = (name: string): Document | null => {
-    const part = parts.get(name);
-    return part ? parseXml(dec.decode(part)) : null;
-  };
-
-  // Workbook part via package rels (fallback: conventional path).
-  const rootRels = getXml("_rels/.rels");
-  const workbookPath =
-    resolvePath("", relTarget(rootRels, "/officeDocument") ?? "xl/workbook.xml");
-  const workbook = getXml(workbookPath);
-  if (!workbook) throw new Error("xlsx: workbook part not found");
-  const wbDir = workbookPath.includes("/")
-    ? workbookPath.slice(0, workbookPath.lastIndexOf("/"))
-    : "";
-  const date1904 =
-    ["1", "true"].includes(
-      tags(workbook, "workbookPr")[0]?.getAttribute("date1904") ?? ""
-    );
-
-  // First sheet in workbook document order -> its worksheet part.
-  const wbRelsName = wbDir ? `${wbDir}/_rels/workbook.xml.rels` : "_rels/workbook.xml.rels";
-  const wbRels = getXml(wbRelsName);
-  const firstSheet = tags(workbook, "sheet")[0];
-  let sheetPath: string | null = null;
-  const sheetRelId =
-    firstSheet?.getAttribute("r:id") ?? firstSheet?.getAttributeNS(NS_DOC_REL, "id");
-  if (sheetRelId && wbRels) {
-    for (const rel of tags(wbRels, "Relationship")) {
-      if (rel.getAttribute("Id") === sheetRelId) {
-        sheetPath = resolvePath(wbDir, rel.getAttribute("Target") ?? "");
-        break;
-      }
-    }
-  }
-  const sheet = getXml(sheetPath ?? `${wbDir}/worksheets/sheet1.xml`);
-  if (!sheet) throw new Error("xlsx: worksheet part not found");
-
-  // Shared strings and styles (both optional).
-  const sstTarget = relTarget(wbRels, "/sharedStrings");
-  const sstDoc = getXml(sstTarget ? resolvePath(wbDir, sstTarget) : `${wbDir}/sharedStrings.xml`);
-  const sharedStrings: string[] = [];
-  if (sstDoc) {
-    for (const si of tags(sstDoc, "si")) {
-      sharedStrings.push(textOf(si));
-    }
-  }
-  const stylesTarget = relTarget(wbRels, "/styles");
-  const stylesDoc = getXml(stylesTarget ? resolvePath(wbDir, stylesTarget) : `${wbDir}/styles.xml`);
-  const xfInfos = stylesDoc ? parseStyles(stylesDoc) : [];
-
+function parseSheetXml(
+  sheet: Document | Element,
+  xfInfos: XfInfo[],
+  sharedStrings: string[],
+  date1904: boolean
+): GridSnapshot {
   const cells: Record<string, string> = {};
   const styles: Record<string, CellStyle> = {};
   const colWidths: Record<number, number> = {};
@@ -761,4 +755,88 @@ export async function xlsxToSnapshot(
   }
 
   return { cells, styles, colWidths, rowHeights };
+}
+
+/**
+ * Parse every worksheet of an .xlsx workbook into an ordered list of named
+ * sheets, in workbook document order. Values/formulas/styles/column widths
+ * are mapped to grid equivalents; unsupported features degrade gracefully.
+ */
+export async function xlsxToWorkbook(
+  data: ArrayBuffer | Uint8Array
+): Promise<XlsxSheet[]> {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const parts = await readZip(bytes);
+  const dec = new TextDecoder();
+  const getXml = (name: string): Document | null => {
+    const part = parts.get(name);
+    return part ? parseXml(dec.decode(part)) : null;
+  };
+
+  // Workbook part via package rels (fallback: conventional path).
+  const rootRels = getXml("_rels/.rels");
+  const workbookPath =
+    resolvePath("", relTarget(rootRels, "/officeDocument") ?? "xl/workbook.xml");
+  const workbook = getXml(workbookPath);
+  if (!workbook) throw new Error("xlsx: workbook part not found");
+  const wbDir = workbookPath.includes("/")
+    ? workbookPath.slice(0, workbookPath.lastIndexOf("/"))
+    : "";
+  const date1904 =
+    ["1", "true"].includes(
+      tags(workbook, "workbookPr")[0]?.getAttribute("date1904") ?? ""
+    );
+
+  const sheetEls = tags(workbook, "sheet");
+  if (sheetEls.length === 0) throw new Error("xlsx: worksheet part not found");
+
+  const wbRelsName = wbDir ? `${wbDir}/_rels/workbook.xml.rels` : "_rels/workbook.xml.rels";
+  const wbRels = getXml(wbRelsName);
+
+  // Shared strings and styles (both workbook-level, optional, shared by
+  // every sheet).
+  const sstTarget = relTarget(wbRels, "/sharedStrings");
+  const sstDoc = getXml(sstTarget ? resolvePath(wbDir, sstTarget) : `${wbDir}/sharedStrings.xml`);
+  const sharedStrings: string[] = [];
+  if (sstDoc) {
+    for (const si of tags(sstDoc, "si")) {
+      sharedStrings.push(textOf(si));
+    }
+  }
+  const stylesTarget = relTarget(wbRels, "/styles");
+  const stylesDoc = getXml(stylesTarget ? resolvePath(wbDir, stylesTarget) : `${wbDir}/styles.xml`);
+  const xfInfos = stylesDoc ? parseStyles(stylesDoc) : [];
+
+  const result: XlsxSheet[] = [];
+  sheetEls.forEach((sheetEl, i) => {
+    const sheetRelId =
+      sheetEl.getAttribute("r:id") ?? sheetEl.getAttributeNS(NS_DOC_REL, "id");
+    let sheetPath: string | null = null;
+    if (sheetRelId && wbRels) {
+      for (const rel of tags(wbRels, "Relationship")) {
+        if (rel.getAttribute("Id") === sheetRelId) {
+          sheetPath = resolvePath(wbDir, rel.getAttribute("Target") ?? "");
+          break;
+        }
+      }
+    }
+    const sheet = getXml(sheetPath ?? `${wbDir}/worksheets/sheet${i + 1}.xml`);
+    if (!sheet) throw new Error("xlsx: worksheet part not found");
+    const name = sheetEl.getAttribute("name") ?? `Sheet${i + 1}`;
+    result.push({ name, snapshot: parseSheetXml(sheet, xfInfos, sharedStrings, date1904) });
+  });
+
+  return result;
+}
+
+/**
+ * Parse the first worksheet of an .xlsx workbook into a GridSnapshot.
+ * Values/formulas/styles/column widths are mapped to grid equivalents;
+ * unsupported features degrade gracefully.
+ */
+export async function xlsxToSnapshot(
+  data: ArrayBuffer | Uint8Array
+): Promise<GridSnapshot> {
+  const sheets = await xlsxToWorkbook(data);
+  return sheets[0].snapshot;
 }

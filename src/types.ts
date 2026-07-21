@@ -7,7 +7,8 @@
 // initialState prop, onStateChange prop (fires on every store mutation,
 // including style-only and width-only edits), getSnapshot() on the handle,
 // and a display field on getData() entries — all additive, for host-app
-// persistence such as the demo's localStorage autosave.
+// persistence such as the demo's localStorage autosave. Added XlsxSheet
+// (name + GridSnapshot) for multi-sheet workbook read/write.
 
 /** A computed scalar value a cell can hold. */
 export type CellValue = string | number | boolean | null;
@@ -91,6 +92,12 @@ export interface GridSnapshot {
   styles: Record<string, CellStyle>;
   colWidths: Record<number, number>;
   rowHeights: Record<number, number>;
+}
+
+/** One named sheet of a multi-sheet workbook (see workbookToXlsx/xlsxToWorkbook). */
+export interface XlsxSheet {
+  name: string;
+  snapshot: GridSnapshot;
 }
 
 /** One changed cell reported through onChange. */
