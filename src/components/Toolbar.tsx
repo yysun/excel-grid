@@ -1,24 +1,29 @@
 // Toolbar: WeCom (企业微信表格)-style minimal formatting toolbar for ExcelGrid.
-// Features: undo/redo, clear format, percent/thousands/decimal number
-// formats, font-size + font-family dropdowns, bold/italic/underline/
-// strikethrough toggles, text & fill color palettes, a borders dropdown
-// (all/outer/single-edge/no-border presets with color + thickness),
-// horizontal + vertical alignment, text wrap, a merge/unmerge-cells toggle,
-// a format-painter toggle, filter-mode toggle, freeze-panes popover, quick
-// SUM, and a right-aligned live search box — always scoped to the grid's
-// current selection columns (no separate scope control; tracked live via
-// GridStore.setSearchQuery/setSearchCols) — all operating on the current
-// selection via GridStore, with pressed states derived from the active
-// cell's style. English tooltips, inline SVG icons, no external
-// dependencies. mousedown is prevented so grid focus is kept (the search
-// input opts back in so it can receive focus/typing).
+// Features: undo/redo, clear format, a format-painter toggle (placed right
+// after clear format), percent/thousands/decimal number formats, font-size
+// + font-family dropdowns, bold/italic/underline/strikethrough toggles,
+// text & fill color palettes, a borders dropdown (all/outer/single-edge/
+// no-border presets with color + thickness), horizontal + vertical
+// alignment, text wrap, separate merge-cells and unmerge-cells buttons,
+// filter-mode toggle, freeze-panes popover, quick SUM, and a right-aligned
+// live search box — always scoped to the grid's current selection columns
+// (no separate scope control; tracked live via GridStore.setSearchQuery/
+// setSearchCols) — all operating on the current selection via GridStore,
+// with pressed states derived from the active cell's style. English
+// tooltips, inline SVG icons, no external dependencies. mousedown is
+// prevented so grid focus is kept (the search input opts back in so it can
+// receive focus/typing).
 // Recent changes: added the font-family dropdown, borders dropdown
-// (GridStore.applyBorder), merge/unmerge toggle (GridStore.mergeCells/
-// unmergeCells, targeting the new `rawSelRange` prop — the literal
-// selection, not the merge-expanded `selRange` used by style actions — so
-// merging never silently grows beyond what was selected), and format-
-// painter toggle (GridStore.armFormatPainter/disarmFormatPainter; ExcelGrid
-// applies the copied style on the destination click/drag).
+// (GridStore.applyBorder), merge/unmerge cells (GridStore.mergeCells/
+// unmergeCells, targeting the `rawSelRange` prop — the literal selection,
+// not the merge-expanded `selRange` used by style actions — so merging
+// never silently grows beyond what was selected), and a format-painter
+// toggle (GridStore.armFormatPainter/disarmFormatPainter; ExcelGrid
+// applies the copied style on the destination click/drag). Split the
+// single merge/unmerge toggle button into two independent, always-visible
+// buttons (each disabled when inapplicable) and moved Format Painter next
+// to Clear formatting; redrew IconPainter as a tilted brush with a paint
+// stroke beneath it, and added IconUnmerge (two separate boxes).
 
 import { useEffect, useRef, useState } from "react";
 import type { BorderEdge, GridStore, RawChange } from "../state/GridStore";
@@ -233,10 +238,8 @@ export function Toolbar({ store, selRange, rawSelRange, active, rows }: ToolbarP
   const canMerge =
     rawSelRange.startRow !== rawSelRange.endRow ||
     rawSelRange.startCol !== rawSelRange.endCol;
-  const toggleMerge = () => {
-    if (activeMerge) store.unmergeCells(activeMerge);
-    else store.mergeCells(rawSelRange);
-  };
+  const mergeSelection = () => store.mergeCells(rawSelRange);
+  const unmergeSelection = () => activeMerge && store.unmergeCells(activeMerge);
 
   const painterArmed = store.isFormatPainterArmed();
   const toggleFormatPainter = () => {
@@ -318,6 +321,7 @@ export function Toolbar({ store, selRange, rawSelRange, active, rows }: ToolbarP
       {btn("Redo", { disabled: !store.canRedo(), onClick: () => store.redo() }, <IconRedo />)}
       <span className="xg-tb-sep" />
       {btn("Clear formatting", { onClick: () => store.clearFormat(selRange) }, <IconEraser />)}
+      {btn("Format Painter", { on: painterArmed, onClick: toggleFormatPainter }, <IconPainter />)}
       <span className="xg-tb-sep" />
       <div className="xg-tb-group">
         {btn("More formats", { on: open === "fmt", onClick: () => setOpen(open === "fmt" ? null : "fmt") }, (
@@ -504,16 +508,8 @@ export function Toolbar({ store, selRange, rawSelRange, active, rows }: ToolbarP
       {btn("Align bottom", { on: activeStyle.valign === "bottom", onClick: () => setVAlign("bottom") }, <IconVAlign kind="bottom" />)}
       {btn("Wrap text", { on: !!activeStyle.wrap, onClick: toggleWrap }, <IconWrap />)}
       <span className="xg-tb-sep" />
-      {btn(
-        activeMerge ? "Unmerge cells" : "Merge cells",
-        { on: !!activeMerge, disabled: !activeMerge && !canMerge, onClick: toggleMerge },
-        <IconMerge />
-      )}
-      {btn(
-        "Format Painter",
-        { on: painterArmed, onClick: toggleFormatPainter },
-        <IconPainter />
-      )}
+      {btn("Merge cells", { disabled: !canMerge, onClick: mergeSelection }, <IconMerge />)}
+      {btn("Unmerge cells", { disabled: !activeMerge, onClick: unmergeSelection }, <IconUnmerge />)}
       <span className="xg-tb-sep" />
       {btn("Filter", { on: store.hasFilter(), onClick: toggleFilter }, <IconFilter />)}
       <div className="xg-tb-group">
@@ -806,24 +802,44 @@ function IconMerge() {
   );
 }
 
-/** Paintbrush (the format-painter toolbar button). */
+/** Two separate cell boxes with a gap (the unmerge-cells toolbar button). */
+function IconUnmerge() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect x="1.5" y="2.5" width="6" height="11" rx="1" stroke="currentColor" strokeWidth="1.2" />
+      <rect x="8.5" y="2.5" width="6" height="11" rx="1" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+/** Tilted paintbrush with a paint stroke beneath it (the format-painter toolbar button). */
 function IconPainter() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path
-        d="M5.5 9.5 3 12l1 1 2.5-2.5"
+        d="M9.8 2.4 13 5.6"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+      <path
+        d="M9.1 6.3 12.4 3a1.1 1.1 0 0 1 1.6 1.6L10.7 7.9Z"
         stroke="currentColor"
         strokeWidth="1.2"
-        strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
-        d="M5.5 9.5 10 5a1.4 1.4 0 0 1 2 2l-4.5 4.5-2-2Z"
+        d="M9.1 6.3 4.8 10.6a1.7 1.7 0 0 0 0 2.4c.66.66 1.74.66 2.4 0l4.3-4.3Z"
         stroke="currentColor"
         strokeWidth="1.2"
         strokeLinejoin="round"
       />
-      <path d="M9 3.5 12.5 7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <path
+        d="M3 14c.9-1.4 2.6-1.7 3.8-.6"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
