@@ -4,20 +4,27 @@
 // graph with #CYCLE! detection; undo/redo as inverse patch batches; column
 // widths; change notification with computed values; sparse per-cell styles
 // (applyStyle/clearFormat, undoable) with number-format aware display;
-// structural edits (insert/delete/move rows/cols) via a single index-remap
-// primitive with sheet-snapshot undo and sheet-wide formula rewriting;
-// hidden rows/cols, Excel-style per-column value-set filters (filterCols =
-// columns showing a filter button, colFilters = allowed value keys per
-// column, filteredRows derived on notify), a live text search (searchQuery
-// + searchCols, matched against getDisplay; searchHiddenRows /
-// searchMatchedCells derived on notify like filteredRows), frozen pane
-// counts (view state, not undoable), range sorting, and used-range
-// computation.
-// Recent changes: added getSnapshot() (serializable cells + styles +
-// colWidths for host-app persistence), initStyle() (direct style record
-// write for pre-render snapshot initialization: not undoable, no notify),
-// and a format-aware `display` field on getAllCells() entries (backing
-// the demo's displayed-text CSV export).
+// per-side cell borders (applyBorder, with all/outer/single-edge presets);
+// a style-replace primitive (replaceStyle) for format painter, plus
+// transient armed-source view state (armFormatPainter/disarmFormatPainter);
+// merged cells (mergeCells/unmergeCells, getMerges/getMergeAt) remapped by
+// structural edits; structural edits (insert/delete/move rows/cols) via a
+// single index-remap primitive with sheet-snapshot undo and sheet-wide
+// formula rewriting; hidden rows/cols, Excel-style per-column value-set
+// filters (filterCols = columns showing a filter button, colFilters =
+// allowed value keys per column, filteredRows derived on notify), a live
+// text search (searchQuery + searchCols, matched against getDisplay;
+// searchHiddenRows / searchMatchedCells derived on notify like
+// filteredRows), frozen pane counts (view state, not undoable), range
+// sorting, and used-range computation.
+// Recent changes: added CellStyle.border/fontFamily support (applyBorder,
+// replaceStyle), merged-cell support (mergeCells/unmergeCells/getMerges/
+// getMergeAt/initMerges, remapped by remapAxis's monotonic/non-monotonic
+// split), and format-painter transient state. getSnapshot() now includes
+// `merges`. initStyle() (direct style record write for pre-render snapshot
+// initialization: not undoable, no notify) and a format-aware `display`
+// field on getAllCells() entries (backing the demo's displayed-text CSV
+// export) predate this change.
 
 import { FormulaError, type ErrorCode } from "../formula/errors";
 import { evaluate, type EvalContext } from "../formula/evaluate";
@@ -25,6 +32,8 @@ import { extractRefs, hasRefError, remapFormulaAxis } from "../formula/adjust";
 import { parse, type Ast } from "../formula/parser";
 import { formatDateSerial, parseDateTimeLiteral } from "../utils/dateSerial";
 import type {
+  BorderSide,
+  CellBorder,
   CellData,
   CellRange,
   CellStyle,
@@ -35,9 +44,11 @@ import type {
 import {
   cellKey,
   formatCellRef,
+  formatRange,
   parseKey,
   rangeContains,
   rangeCoords,
+  rangesIntersect,
 } from "../utils/cellRef";
 
 interface CellRecord {
@@ -63,6 +74,12 @@ interface StylePatch {
   after: CellStyle | null;
 }
 
+interface MergesPatch {
+  kind: "merges";
+  before: CellRange[];
+  after: CellRange[];
+}
+
 /** Sparse copy of all remappable sheet state, for structural undo. */
 interface SheetSnapshot {
   raws: Map<string, string>;
@@ -73,6 +90,7 @@ interface SheetSnapshot {
   hiddenCols: Set<number>;
   filterCols: Set<number>;
   colFilters: Map<number, Set<string>>;
+  merges: CellRange[];
 }
 
 interface SheetPatch {
@@ -81,10 +99,20 @@ interface SheetPatch {
   after: SheetSnapshot;
 }
 
-type Patch = RawPatch | StylePatch | SheetPatch;
+type Patch = RawPatch | StylePatch | MergesPatch | SheetPatch;
 
 type Axis = "row" | "col";
 export type SortDir = "asc" | "desc";
+
+/** Border toolbar presets: which sides of which cells in a range are touched. */
+export type BorderEdge =
+  | "all"
+  | "outer"
+  | "none"
+  | "top"
+  | "right"
+  | "bottom"
+  | "left";
 
 /** Styling a range larger than this is a no-op to keep the UI responsive. */
 export const STYLE_CELL_CAP = 200_000;
@@ -127,6 +155,10 @@ export class GridStore {
   private searchMatchedCells = new Set<string>();
   private frozenRows = 0;
   private frozenCols = 0;
+  /** Merged ranges; always kept mutually disjoint. */
+  private merges: CellRange[] = [];
+  /** Format-painter armed source range (view state, not undoable). */
+  private formatPainterSource: CellRange | null = null;
   private version = 0;
   private listeners = new Set<() => void>();
 
@@ -243,7 +275,8 @@ export class GridStore {
     for (const [col, width] of this.colWidths) colWidths[col] = width;
     const rowHeights: Record<number, number> = {};
     for (const [row, height] of this.rowHeights) rowHeights[row] = height;
-    return { cells, styles, colWidths, rowHeights };
+    const merges = this.merges.map(formatRange);
+    return { cells, styles, colWidths, rowHeights, merges };
   }
 
   /**
@@ -253,6 +286,17 @@ export class GridStore {
   initStyle(row: number, col: number, style: CellStyle): void {
     if (row < 0 || col < 0 || row >= this.rowCount || col >= this.colCount) return;
     this.setStyleRecord(row, col, { ...style });
+  }
+
+  /**
+   * Set the merged-range list directly, for snapshot initialization before
+   * the first render only: not undoable and does not notify. Degenerate
+   * (single-cell) ranges are dropped.
+   */
+  initMerges(merges: CellRange[]): void {
+    this.merges = merges
+      .map((m) => this.clampRange(m))
+      .filter((m) => m.startRow !== m.endRow || m.startCol !== m.endCol);
   }
 
   getColWidth(col: number): number {
@@ -291,6 +335,19 @@ export class GridStore {
 
   getStyle(row: number, col: number): CellStyle | null {
     return this.styles.get(cellKey(row, col)) ?? null;
+  }
+
+  /** All merged ranges (copies; safe to mutate). */
+  getMerges(): CellRange[] {
+    return this.merges.map((m) => ({ ...m }));
+  }
+
+  /** The merge covering (row,col) — anchor or covered — or null. */
+  getMergeAt(row: number, col: number): CellRange | null {
+    for (const m of this.merges) {
+      if (rangeContains(m, row, col)) return m;
+    }
+    return null;
   }
 
   /**
@@ -357,6 +414,29 @@ export class GridStore {
 
   getFrozenCols(): number {
     return this.frozenCols;
+  }
+
+  /** True while a format-painter source range is armed. */
+  isFormatPainterArmed(): boolean {
+    return this.formatPainterSource !== null;
+  }
+
+  /** The armed format-painter source range, or null. */
+  getFormatPainterSource(): CellRange | null {
+    return this.formatPainterSource ? { ...this.formatPainterSource } : null;
+  }
+
+  /** Arm the format painter with `range` as its style source. View state: not undoable. */
+  armFormatPainter(range: CellRange): void {
+    this.formatPainterSource = { ...range };
+    this.notify([]);
+  }
+
+  /** Disarm the format painter without applying anything. View state: not undoable. */
+  disarmFormatPainter(): void {
+    if (!this.formatPainterSource) return;
+    this.formatPainterSource = null;
+    this.notify([]);
   }
 
   /** Hide or unhide rows [start..end]. View state: not undoable. */
@@ -486,7 +566,7 @@ export class GridStore {
         this.setStyleRecord(row, col, after);
       }
     }
-    this.commitStylePatches(patches);
+    this.commitPatches(patches);
   }
 
   /** Remove all styling from cells in `range` as one undoable action. */
@@ -499,7 +579,104 @@ export class GridStore {
       patches.push({ kind: "style", row, col, before: style, after: null });
     }
     for (const p of patches) this.setStyleRecord(p.row, p.col, null);
-    this.commitStylePatches(patches);
+    this.commitPatches(patches);
+  }
+
+  /**
+   * Replace (not merge) every cell's style in `range` with a copy of
+   * `style` (or clear it, for `null`) as one undoable action. Used by the
+   * format painter, which overwrites the destination's formatting outright.
+   */
+  replaceStyle(range: CellRange, style: CellStyle | null): void {
+    const r = this.clampRange(range);
+    const count = (r.endRow - r.startRow + 1) * (r.endCol - r.startCol + 1);
+    if (count <= 0 || count > STYLE_CELL_CAP) return;
+    const patches: Patch[] = [];
+    for (let row = r.startRow; row <= r.endRow; row++) {
+      for (let col = r.startCol; col <= r.endCol; col++) {
+        const key = cellKey(row, col);
+        const before = this.styles.get(key) ?? null;
+        const after = style ? { ...style } : null;
+        if (stylesEqual(before, after)) continue;
+        patches.push({ kind: "style", row, col, before, after });
+        this.setStyleRecord(row, col, after);
+      }
+    }
+    this.commitPatches(patches);
+  }
+
+  /**
+   * Apply a border preset to `range` as one undoable action. `"all"` and
+   * `"none"` touch every cell's every side; `"outer"` and the single-edge
+   * presets touch only the sides of `range` that lie on that edge, leaving
+   * every other side of every cell exactly as it was. `side` is ignored for
+   * `"none"` (which clears the border entirely).
+   */
+  applyBorder(range: CellRange, edge: BorderEdge, side: BorderSide | null): void {
+    const r = this.clampRange(range);
+    const count = (r.endRow - r.startRow + 1) * (r.endCol - r.startCol + 1);
+    if (count <= 0 || count > STYLE_CELL_CAP) return;
+    const patches: Patch[] = [];
+    for (let row = r.startRow; row <= r.endRow; row++) {
+      for (let col = r.startCol; col <= r.endCol; col++) {
+        const key = cellKey(row, col);
+        const before = this.styles.get(key) ?? null;
+        const border = nextBorder(before?.border, edge, side, row, col, r);
+        if (border === "unchanged") continue;
+        const after = mergeStyle(before, { border });
+        if (stylesEqual(before, after)) continue;
+        patches.push({ kind: "style", row, col, before, after });
+        this.setStyleRecord(row, col, after);
+      }
+    }
+    this.commitPatches(patches);
+  }
+
+  // ---- merged cells ----
+
+  /**
+   * Merge `range` (2+ cells) into one cell as one undoable action: the
+   * top-left (anchor) cell keeps its value and style; every other occupied
+   * cell in `range` has its raw content cleared; any existing merges that
+   * intersect `range` are replaced by the new one.
+   */
+  mergeCells(range: CellRange): void {
+    const r = this.clampRange(range);
+    if (r.startRow === r.endRow && r.startCol === r.endCol) return;
+    const patches: Patch[] = [];
+    const touched: string[] = [];
+    for (const key of [...this.cells.keys()]) {
+      const { row, col } = parseKey(key);
+      if (row === r.startRow && col === r.startCol) continue; // anchor keeps its value
+      if (!rangeContains(r, row, col)) continue;
+      const before = this.cells.get(key)!.raw;
+      patches.push({ kind: "raw", row, col, before, after: null });
+      this.applyRaw(row, col, null);
+      touched.push(key);
+    }
+    const before = this.merges.map((m) => ({ ...m }));
+    this.merges = this.merges.filter((m) => !rangesIntersect(m, r));
+    this.merges.push({ ...r });
+    const after = this.merges.map((m) => ({ ...m }));
+    patches.push({ kind: "merges", before, after });
+    this.undoStack.push(patches);
+    this.redoStack = [];
+    const recomputed = this.recompute(touched);
+    this.notify(this.toGridChanges(new Set([...touched, ...recomputed])));
+  }
+
+  /** Remove every merge intersecting `range` as one undoable action. */
+  unmergeCells(range: CellRange): void {
+    const r = this.clampRange(range);
+    const before = this.merges.map((m) => ({ ...m }));
+    const after = this.merges.filter((m) => !rangesIntersect(m, r));
+    if (after.length === this.merges.length) return;
+    this.merges = after;
+    this.undoStack.push([
+      { kind: "merges", before, after: after.map((m) => ({ ...m })) },
+    ]);
+    this.redoStack = [];
+    this.notify([]);
   }
 
   // ---- structural edits (insert/delete/move) ----
@@ -507,47 +684,55 @@ export class GridStore {
   /** Insert n rows before `at`; content at the sheet edge is dropped. */
   insertRows(at: number, n: number): void {
     if (n <= 0 || at < 0 || at > this.rowCount) return;
-    this.remapAxis("row", (i) => (i < at ? i : i + n));
+    this.remapAxis("row", (i) => (i < at ? i : i + n), true);
   }
 
   insertCols(at: number, n: number): void {
     if (n <= 0 || at < 0 || at > this.colCount) return;
-    this.remapAxis("col", (i) => (i < at ? i : i + n));
+    this.remapAxis("col", (i) => (i < at ? i : i + n), true);
   }
 
   /** Delete rows [start..end]; references to them become #REF!. */
   deleteRows(start: number, end: number): void {
     if (start < 0 || end < start || end >= this.rowCount) return;
     const n = end - start + 1;
-    this.remapAxis("row", (i) => (i < start ? i : i <= end ? null : i - n));
+    this.remapAxis("row", (i) => (i < start ? i : i <= end ? null : i - n), true);
   }
 
   deleteCols(start: number, end: number): void {
     if (start < 0 || end < start || end >= this.colCount) return;
     const n = end - start + 1;
-    this.remapAxis("col", (i) => (i < start ? i : i <= end ? null : i - n));
+    this.remapAxis("col", (i) => (i < start ? i : i <= end ? null : i - n), true);
   }
 
   /** Swap rows [start..end] with the adjacent row in direction dir. */
   moveRows(start: number, end: number, dir: -1 | 1): void {
     if (start < 0 || end < start || end >= this.rowCount) return;
     if (dir === -1 ? start === 0 : end === this.rowCount - 1) return;
-    this.remapAxis("row", blockSwapMap(start, end, dir));
+    this.remapAxis("row", blockSwapMap(start, end, dir), false);
   }
 
   moveCols(start: number, end: number, dir: -1 | 1): void {
     if (start < 0 || end < start || end >= this.colCount) return;
     if (dir === -1 ? start === 0 : end === this.colCount - 1) return;
-    this.remapAxis("col", blockSwapMap(start, end, dir));
+    this.remapAxis("col", blockSwapMap(start, end, dir), false);
   }
 
   /**
    * Remap one axis's indices through `map` (null / out-of-bounds = dropped):
-   * moves raw content, styles, column widths, and hidden flags, rewrites
-   * every formula's references on that axis, and records one undoable
-   * SheetPatch.
+   * moves raw content, styles, column widths, hidden flags, and merges,
+   * rewrites every formula's references on that axis, and records one
+   * undoable SheetPatch. `monotonic` must be true only when `map` is
+   * order-preserving (insert/delete) — merges remap via a cheap two-corner
+   * map when true, or a full-span contiguity check when false (move's
+   * block-swap map), since a non-monotonic map can otherwise produce a
+   * non-inverted but incoherent merge span (see remapMergeAxis).
    */
-  private remapAxis(axis: Axis, map: (i: number) => number | null): void {
+  private remapAxis(
+    axis: Axis,
+    map: (i: number) => number | null,
+    monotonic: boolean
+  ): void {
     const count = axis === "row" ? this.rowCount : this.colCount;
     const mapKey = (key: string): string | null => {
       const { row, col } = parseKey(key);
@@ -566,6 +751,7 @@ export class GridStore {
       filterCols: axis === "col" ? new Set() : new Set(this.filterCols),
       colFilters:
         axis === "col" ? new Map() : copyColFilters(this.colFilters),
+      merges: [],
     };
     for (const [key, rec] of this.cells) {
       const nk = mapKey(key);
@@ -618,6 +804,19 @@ export class GridStore {
         }
       }
     }
+    after.merges = [];
+    for (const m of this.merges) {
+      const remapped = remapMergeAxis(m, axis, map, count, monotonic);
+      // Drop a merge that shrank to a single cell on both axes (e.g. a
+      // 2-row, 1-col merge whose rows shrank to 1): it is no longer a
+      // merge, same degeneracy check as initMerges/mergeCells.
+      if (
+        remapped &&
+        (remapped.startRow !== remapped.endRow || remapped.startCol !== remapped.endCol)
+      ) {
+        after.merges.push(remapped);
+      }
+    }
     if (sheetSnapshotsEqual(before, after)) return; // e.g. edge no-ops
     const touched = this.restoreSheet(after);
     const recomputed = this.recompute(touched);
@@ -638,6 +837,7 @@ export class GridStore {
       hiddenCols: new Set(this.hiddenCols),
       filterCols: new Set(this.filterCols),
       colFilters: copyColFilters(this.colFilters),
+      merges: this.merges.map((m) => ({ ...m })),
     };
   }
 
@@ -658,6 +858,7 @@ export class GridStore {
     this.hiddenCols = new Set(snap.hiddenCols);
     this.filterCols = new Set(snap.filterCols);
     this.colFilters = copyColFilters(snap.colFilters);
+    this.merges = snap.merges.map((m) => ({ ...m }));
     for (const [key, raw] of snap.raws) {
       const { row, col } = parseKey(key);
       this.applyRaw(row, col, raw);
@@ -858,6 +1059,8 @@ export class GridStore {
         touched.push(cellKey(p.row, p.col));
       } else if (p.kind === "style") {
         this.setStyleRecord(p.row, p.col, p[side]);
+      } else if (p.kind === "merges") {
+        this.merges = p[side].map((m) => ({ ...m }));
       } else {
         touched.push(...this.restoreSheet(p[side]));
       }
@@ -866,7 +1069,7 @@ export class GridStore {
     this.notify(this.toGridChanges(new Set([...touched, ...recomputed])));
   }
 
-  private commitStylePatches(patches: Patch[]): void {
+  private commitPatches(patches: Patch[]): void {
     if (patches.length === 0) return;
     this.undoStack.push(patches);
     this.redoStack = [];
@@ -1062,6 +1265,13 @@ function sheetSnapshotsEqual(a: SheetSnapshot, b: SheetSnapshot): boolean {
   };
   const setsEqual = <T,>(x: Set<T>, y: Set<T>): boolean =>
     x.size === y.size && [...x].every((v) => y.has(v));
+  const rangeEqual = (p: CellRange, q: CellRange): boolean =>
+    p.startRow === q.startRow &&
+    p.endRow === q.endRow &&
+    p.startCol === q.startCol &&
+    p.endCol === q.endCol;
+  const mergesEqual = (x: CellRange[], y: CellRange[]): boolean =>
+    x.length === y.length && x.every((m, i) => rangeEqual(m, y[i]));
   return (
     mapsEqual(a.raws, b.raws, (p, q) => p === q) &&
     mapsEqual(a.styles, b.styles, stylesEqual) &&
@@ -1070,7 +1280,8 @@ function sheetSnapshotsEqual(a: SheetSnapshot, b: SheetSnapshot): boolean {
     setsEqual(a.hiddenRows, b.hiddenRows) &&
     setsEqual(a.hiddenCols, b.hiddenCols) &&
     setsEqual(a.filterCols, b.filterCols) &&
-    mapsEqual(a.colFilters, b.colFilters, setsEqual)
+    mapsEqual(a.colFilters, b.colFilters, setsEqual) &&
+    mergesEqual(a.merges, b.merges)
   );
 }
 
@@ -1109,6 +1320,122 @@ function blockSwapMap(
     if (i === end + 1) return start;
     return i >= start && i <= end ? i + 1 : i;
   };
+}
+
+/**
+ * Remap one merge through a single-axis structural edit; returns null to
+ * drop the merge. For a `monotonic` map (insert/delete), mapping just the
+ * two corners is correct and cheap: order is preserved, so the interior
+ * stays contiguous automatically (a corner landing on `null`/out-of-bounds/
+ * inverted drops the merge). For a non-monotonic map (move's block-swap),
+ * two corners are not enough — a merge straddling the swap boundary can map
+ * to a non-inverted span that silently absorbs unrelated swapped-in
+ * content. So every row/col in the merge's old span is mapped, in original
+ * order (not sorted into a set — a merge exactly spanning a single-line
+ * swap would otherwise look like a valid contiguous set while its content
+ * relocated out from under it), and kept only if that sequence is strictly
+ * increasing with no gap and in bounds.
+ */
+function remapMergeAxis(
+  m: CellRange,
+  axis: Axis,
+  map: (i: number) => number | null,
+  count: number,
+  monotonic: boolean
+): CellRange | null {
+  const oldStart = axis === "row" ? m.startRow : m.startCol;
+  const oldEnd = axis === "row" ? m.endRow : m.endCol;
+  let newStart: number;
+  let newEnd: number;
+  if (monotonic) {
+    // The anchor corner must survive — losing it drops the merge (its
+    // value/style are keyed to the anchor). The far corner does not: a
+    // delete that removes only part of the merge's tail (touching or
+    // passing its far edge without reaching the anchor) shrinks the merge
+    // to its last surviving line rather than dropping it, so scan backward
+    // from the old far edge for the last non-null image (bounded by merge
+    // size, cheap). A monotonic map's interior is order-preserving, so the
+    // first survivor found this way is also the correct new far corner.
+    const start = map(oldStart);
+    if (start === null) return null;
+    let end: number | null = null;
+    for (let i = oldEnd; i >= oldStart; i--) {
+      const v = map(i);
+      if (v !== null) {
+        end = v;
+        break;
+      }
+    }
+    if (end === null) return null;
+    newStart = start;
+    newEnd = end;
+  } else {
+    const mapped: number[] = [];
+    let prev = -Infinity;
+    for (let i = oldStart; i <= oldEnd; i++) {
+      const v = map(i);
+      if (v === null || v <= prev) return null;
+      mapped.push(v);
+      prev = v;
+    }
+    newStart = mapped[0];
+    newEnd = mapped[mapped.length - 1];
+    // Gap check: a strictly increasing sequence can still skip a value
+    // (e.g. [3,4,6]) when a merge straddles a move's swap boundary — that
+    // gap means a foreign (swapped-in) line would sit inside the merge's
+    // declared span, so reject it instead of silently keeping a corrupt
+    // range.
+    if (newEnd - newStart + 1 !== mapped.length) return null;
+  }
+  if (newStart < 0 || newEnd >= count || newStart > newEnd) return null;
+  return axis === "row"
+    ? { ...m, startRow: newStart, endRow: newEnd }
+    : { ...m, startCol: newStart, endCol: newEnd };
+}
+
+/**
+ * Compute the next `CellBorder` for one cell under a border preset, or the
+ * sentinel `"unchanged"` when this cell's position isn't touched by `edge`
+ * (e.g. an interior cell under `"outer"`). `"all"`/`"none"` touch every
+ * cell's every side; `"outer"` and the single-edge presets only touch the
+ * sides of `range` that lie on that edge, leaving every other side of the
+ * cell's existing border exactly as it was.
+ */
+function nextBorder(
+  existing: CellBorder | undefined,
+  edge: BorderEdge,
+  side: BorderSide | null,
+  row: number,
+  col: number,
+  range: CellRange
+): CellBorder | undefined | "unchanged" {
+  if (edge === "none") {
+    return existing === undefined ? "unchanged" : undefined;
+  }
+  const touches = {
+    top: edge === "all" || ((edge === "outer" || edge === "top") && row === range.startRow),
+    right: edge === "all" || ((edge === "outer" || edge === "right") && col === range.endCol),
+    bottom: edge === "all" || ((edge === "outer" || edge === "bottom") && row === range.endRow),
+    left: edge === "all" || ((edge === "outer" || edge === "left") && col === range.startCol),
+  };
+  if (!touches.top && !touches.right && !touches.bottom && !touches.left) {
+    return "unchanged";
+  }
+  const next: CellBorder = { ...existing };
+  if (touches.top) setBorderSide(next, "top", side);
+  if (touches.right) setBorderSide(next, "right", side);
+  if (touches.bottom) setBorderSide(next, "bottom", side);
+  if (touches.left) setBorderSide(next, "left", side);
+  return Object.keys(next).length === 0 ? undefined : next;
+}
+
+function setBorderSide(
+  border: CellBorder,
+  key: keyof CellBorder,
+  side: BorderSide | null
+): void {
+  if (side === null) delete border[key];
+  else border[key] = side;
 }
 
 /**
@@ -1153,11 +1480,31 @@ function mergeStyle(
   return Object.keys(out).length === 0 ? null : out;
 }
 
+function borderSideEqual(a: BorderSide | undefined, b: BorderSide | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.style === b.style && a.color === b.color;
+}
+
+/** Deep-ish equality for the one nested-object CellStyle field. */
+function bordersEqual(a: CellBorder | undefined, b: CellBorder | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    borderSideEqual(a.top, b.top) &&
+    borderSideEqual(a.right, b.right) &&
+    borderSideEqual(a.bottom, b.bottom) &&
+    borderSideEqual(a.left, b.left)
+  );
+}
+
 function stylesEqual(a: CellStyle | null, b: CellStyle | null): boolean {
   if (a === null || b === null) return a === b;
   const keys = Object.keys(a) as (keyof CellStyle)[];
   if (keys.length !== Object.keys(b).length) return false;
-  return keys.every((k) => a[k] === b[k]);
+  return keys.every((k) =>
+    k === "border" ? bordersEqual(a.border, b.border) : a[k] === b[k]
+  );
 }
 
 /** Format a numeric value for display according to the cell's style. */

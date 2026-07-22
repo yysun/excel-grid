@@ -12,6 +12,9 @@ import "./styles.css";
 
 export { ExcelGrid } from "./components/ExcelGrid";
 export type {
+  BorderLineStyle,
+  BorderSide,
+  CellBorder,
   CellCoord,
   CellData,
   CellRange,

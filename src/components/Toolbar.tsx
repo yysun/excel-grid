@@ -1,25 +1,29 @@
 // Toolbar: WeCom (企业微信表格)-style minimal formatting toolbar for ExcelGrid.
 // Features: undo/redo, clear format, percent/thousands/decimal number
-// formats, font-size dropdown, bold/italic/underline/strikethrough toggles,
-// text & fill color palettes, horizontal + vertical alignment, text wrap,
-// filter-mode toggle, freeze-panes popover, quick SUM, and a right-aligned
-// live search box — always scoped to the grid's current selection columns
-// (no separate scope control; tracked live via GridStore.setSearchQuery/
-// setSearchCols) — all operating on the current selection via GridStore,
-// with pressed states derived from the active cell's style. English
-// tooltips, inline SVG icons, no external dependencies. mousedown is
-// prevented so grid focus is kept (the search input opts back in so it can
-// receive focus/typing).
-// Recent changes: removed the "All columns" / "Selected columns" scope
-// dropdown per user feedback ("use the grid column selection") — search
-// scope is now always exactly the current selection's columns, pushed to
-// the store on every selRange change with no mode to toggle; "More
-// formats" dropdown gained Date / Time / Date time / Duration rows
-// (Excel-style serial-number formats, added by GridStore.formatNumber).
+// formats, font-size + font-family dropdowns, bold/italic/underline/
+// strikethrough toggles, text & fill color palettes, a borders dropdown
+// (all/outer/single-edge/no-border presets with color + thickness),
+// horizontal + vertical alignment, text wrap, a merge/unmerge-cells toggle,
+// a format-painter toggle, filter-mode toggle, freeze-panes popover, quick
+// SUM, and a right-aligned live search box — always scoped to the grid's
+// current selection columns (no separate scope control; tracked live via
+// GridStore.setSearchQuery/setSearchCols) — all operating on the current
+// selection via GridStore, with pressed states derived from the active
+// cell's style. English tooltips, inline SVG icons, no external
+// dependencies. mousedown is prevented so grid focus is kept (the search
+// input opts back in so it can receive focus/typing).
+// Recent changes: added the font-family dropdown, borders dropdown
+// (GridStore.applyBorder), merge/unmerge toggle (GridStore.mergeCells/
+// unmergeCells, targeting the new `rawSelRange` prop — the literal
+// selection, not the merge-expanded `selRange` used by style actions — so
+// merging never silently grows beyond what was selected), and format-
+// painter toggle (GridStore.armFormatPainter/disarmFormatPainter; ExcelGrid
+// applies the copied style on the destination click/drag).
 
 import { useEffect, useRef, useState } from "react";
-import type { GridStore, RawChange } from "../state/GridStore";
+import type { BorderEdge, GridStore, RawChange } from "../state/GridStore";
 import type {
+  BorderLineStyle,
   CellCoord,
   CellRange,
   CellStyle,
@@ -31,13 +35,38 @@ import { colToLetters } from "../utils/cellRef";
 
 const FONT_SIZES = [10, 11, 12, 14, 16, 18, 24];
 
+/** Font-family preset list; bare names so xlsx round-trips with no translation. */
+const FONT_FAMILIES: Array<{ value: string | undefined; label: string }> = [
+  { value: undefined, label: "Default" },
+  { value: "Arial", label: "Arial" },
+  { value: "Times New Roman", label: "Times New Roman" },
+  { value: "Georgia", label: "Georgia" },
+  { value: "Courier New", label: "Courier New" },
+  { value: "Verdana", label: "Verdana" },
+  { value: "Trebuchet MS", label: "Trebuchet MS" },
+  { value: "Comic Sans MS", label: "Comic Sans MS" },
+];
+
+/** Border toolbar presets, in the order shown in the popover. */
+const BORDER_PRESETS: Array<{ edge: BorderEdge; label: string }> = [
+  { edge: "all", label: "All borders" },
+  { edge: "outer", label: "Outside borders" },
+  { edge: "top", label: "Top border" },
+  { edge: "right", label: "Right border" },
+  { edge: "bottom", label: "Bottom border" },
+  { edge: "left", label: "Left border" },
+  { edge: "none", label: "No border" },
+];
+
+const BORDER_WIDTHS: BorderLineStyle[] = ["thin", "medium", "thick"];
+
 const PALETTE = [
   "#000000", "#434343", "#666666", "#999999", "#b7b7b7", "#d9d9d9", "#efefef", "#ffffff",
   "#e60000", "#ff9900", "#f9d900", "#00b050", "#00b0f0", "#1a73e8", "#7030a0", "#f06292",
   "#f4cccc", "#fce5cd", "#fff2cc", "#d9ead3", "#d0e0e3", "#cfe2f3", "#d9d2e9", "#ead1dc",
 ];
 
-type Popover = "fmt" | "size" | "color" | "fill" | "freeze" | null;
+type Popover = "fmt" | "size" | "font" | "color" | "fill" | "freeze" | "border" | null;
 
 /** Rows of the "More formats" dropdown; fmt undefined = Automatic. */
 const FORMAT_ITEMS: Array<{
@@ -65,15 +94,20 @@ const FMT_DEFAULT_DECIMALS: Partial<Record<NumFmt, number>> = {
 
 interface ToolbarProps {
   store: GridStore;
+  /** Merge-expanded selection; drives style actions (bold, border, font, quick-sum). */
   selRange: CellRange;
+  /** The literal dragged/selected range, unexpanded; drives merge/unmerge. */
+  rawSelRange: CellRange;
   active: CellCoord;
   /** Total row count of the grid (bounds check for quick sum). */
   rows: number;
 }
 
-export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
+export function Toolbar({ store, selRange, rawSelRange, active, rows }: ToolbarProps) {
   const [open, setOpen] = useState<Popover>(null);
   const [query, setQuery] = useState("");
+  const [borderColor, setBorderColor] = useState("#000000");
+  const [borderWidth, setBorderWidth] = useState<BorderLineStyle>("thin");
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -92,7 +126,14 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
     const cols: number[] = [];
     for (let c = selRange.startCol; c <= selRange.endCol; c++) cols.push(c);
     store.setSearchCols(cols);
-  }, [store, selRange]);
+    // Depend on the primitive bounds, not the selRange object reference:
+    // selRange is now merge-aware and recomputed (as a fresh object) on
+    // every render that touches the merges list, so keying this effect on
+    // its identity would re-fire (and re-notify the store) even when the
+    // actual column range hasn't changed, which can cascade into a
+    // render loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, selRange.startCol, selRange.endCol]);
 
   const changeQuery = (value: string) => {
     setQuery(value);
@@ -172,6 +213,35 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
   const applyFontSize = (n: number) => {
     store.applyStyle(selRange, { fontSize: n });
     setOpen(null);
+  };
+
+  const applyFontFamily = (value: string | undefined) => {
+    store.applyStyle(selRange, { fontFamily: value });
+    setOpen(null);
+  };
+
+  const applyBorderPreset = (edge: BorderEdge) => {
+    store.applyBorder(
+      selRange,
+      edge,
+      edge === "none" ? null : { style: borderWidth, color: borderColor }
+    );
+    setOpen(null);
+  };
+
+  const activeMerge = store.getMergeAt(active.row, active.col);
+  const canMerge =
+    rawSelRange.startRow !== rawSelRange.endRow ||
+    rawSelRange.startCol !== rawSelRange.endCol;
+  const toggleMerge = () => {
+    if (activeMerge) store.unmergeCells(activeMerge);
+    else store.mergeCells(rawSelRange);
+  };
+
+  const painterArmed = store.isFormatPainterArmed();
+  const toggleFormatPainter = () => {
+    if (painterArmed) store.disarmFormatPainter();
+    else store.armFormatPainter(selRange);
   };
 
   const quickSum = () => {
@@ -312,6 +382,32 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
           </div>
         )}
       </div>
+      <div className="xg-tb-group">
+        {btn("Font family", { on: open === "font", onClick: () => setOpen(open === "font" ? null : "font") }, (
+          <>
+            <span className="xg-tb-font-label">{activeStyle.fontFamily ?? "Font"}</span>
+            <IconCaret />
+          </>
+        ))}
+        {open === "font" && (
+          <div className="xg-tb-pop xg-tb-menu">
+            {FONT_FAMILIES.map((f) => (
+              <button
+                key={f.label}
+                type="button"
+                className="xg-tb-menu-item xg-tb-fmt-item"
+                style={f.value ? { fontFamily: f.value } : undefined}
+                onClick={() => applyFontFamily(f.value)}
+              >
+                <span className="xg-tb-fmt-check">
+                  {activeStyle.fontFamily === f.value ? "✓" : ""}
+                </span>
+                <span>{f.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <span className="xg-tb-sep" />
       {btn("Bold", { on: !!activeStyle.bold, onClick: () => toggleFlag("bold"), className: "xg-tb-b" }, "B")}
       {btn("Italic", { on: !!activeStyle.italic, onClick: () => toggleFlag("italic"), className: "xg-tb-i" }, "I")}
@@ -342,6 +438,62 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
         ))}
         {open === "fill" && palette("background")}
       </div>
+      <div className="xg-tb-group">
+        {btn("Borders", { on: open === "border", onClick: () => setOpen(open === "border" ? null : "border") }, (
+          <>
+            <IconBorders />
+            <IconCaret />
+          </>
+        ))}
+        {open === "border" && (
+          <div className="xg-tb-pop xg-tb-menu xg-tb-borders">
+            <div className="xg-tb-border-presets">
+              {BORDER_PRESETS.map((p) => (
+                <button
+                  key={p.edge}
+                  type="button"
+                  className="xg-tb-menu-item"
+                  onClick={() => applyBorderPreset(p.edge)}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <div className="xg-tb-border-options">
+              <div className="xg-tb-palette">
+                {PALETTE.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    className={
+                      "xg-tb-swatch" +
+                      (borderColor === c ? " xg-tb-swatch--on" : "")
+                    }
+                    style={{ background: c }}
+                    title={c}
+                    onClick={() => setBorderColor(c)}
+                  />
+                ))}
+              </div>
+              <div className="xg-tb-border-widths">
+                {BORDER_WIDTHS.map((w) => (
+                  <button
+                    key={w}
+                    type="button"
+                    className={
+                      "xg-tb-width-item" +
+                      (borderWidth === w ? " xg-tb-width-item--on" : "")
+                    }
+                    onClick={() => setBorderWidth(w)}
+                  >
+                    {w}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
       <span className="xg-tb-sep" />
       {btn("Align left", { on: activeStyle.align === "left", onClick: () => setAlign("left") }, <IconAlign kind="left" />)}
       {btn("Align center", { on: activeStyle.align === "center", onClick: () => setAlign("center") }, <IconAlign kind="center" />)}
@@ -351,6 +503,17 @@ export function Toolbar({ store, selRange, active, rows }: ToolbarProps) {
       {btn("Align middle", { on: activeStyle.valign === "middle", onClick: () => setVAlign("middle") }, <IconVAlign kind="middle" />)}
       {btn("Align bottom", { on: activeStyle.valign === "bottom", onClick: () => setVAlign("bottom") }, <IconVAlign kind="bottom" />)}
       {btn("Wrap text", { on: !!activeStyle.wrap, onClick: toggleWrap }, <IconWrap />)}
+      <span className="xg-tb-sep" />
+      {btn(
+        activeMerge ? "Unmerge cells" : "Merge cells",
+        { on: !!activeMerge, disabled: !activeMerge && !canMerge, onClick: toggleMerge },
+        <IconMerge />
+      )}
+      {btn(
+        "Format Painter",
+        { on: painterArmed, onClick: toggleFormatPainter },
+        <IconPainter />
+      )}
       <span className="xg-tb-sep" />
       {btn("Filter", { on: store.hasFilter(), onClick: toggleFilter }, <IconFilter />)}
       <div className="xg-tb-group">
@@ -604,6 +767,63 @@ function IconFreeze() {
         strokeWidth="1.1"
       />
       <path d="M2.5 6h11M6 2.5v11" stroke="currentColor" strokeWidth="1.1" />
+    </svg>
+  );
+}
+
+/** Cell box with a bold outer border (the borders toolbar button). */
+function IconBorders() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect
+        x="2.5"
+        y="2.5"
+        width="11"
+        height="11"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <path d="M2.5 7.8h11M7.8 2.5v11" stroke="currentColor" strokeWidth="0.9" />
+    </svg>
+  );
+}
+
+/** Two cell boxes joined into one (the merge-cells toolbar button). */
+function IconMerge() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect
+        x="2.5"
+        y="2.5"
+        width="11"
+        height="11"
+        rx="1"
+        stroke="currentColor"
+        strokeWidth="1.2"
+      />
+      <path d="M2.5 8h11" stroke="currentColor" strokeWidth="1.2" strokeDasharray="2 1.5" />
+    </svg>
+  );
+}
+
+/** Paintbrush (the format-painter toolbar button). */
+function IconPainter() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M5.5 9.5 3 12l1 1 2.5-2.5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M5.5 9.5 10 5a1.4 1.4 0 0 1 2 2l-4.5 4.5-2-2Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+      <path d="M9 3.5 12.5 7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
     </svg>
   );
 }

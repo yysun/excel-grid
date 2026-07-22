@@ -1,7 +1,9 @@
 // A1-style cell reference utilities.
 // Features: column index <-> letters (A..Z, AA..), parse/format cell refs with
-// optional $ anchors, range parsing/normalization, and "row,col" map keys.
-// Recent changes: initial implementation.
+// optional $ anchors, range parsing/normalization, "row,col" map keys, and
+// range containment/intersection helpers.
+// Recent changes: added formatRange (inverse of parseRange, for GridSnapshot
+// merge refs) and rangesIntersect (merged-cell overlap detection).
 
 import type { CellCoord, CellRange } from "../types";
 
@@ -101,6 +103,21 @@ export function parseKey(key: string): CellCoord {
 export function rangeContains(r: CellRange, row: number, col: number): boolean {
   return (
     row >= r.startRow && row <= r.endRow && col >= r.startCol && col <= r.endCol
+  );
+}
+
+/** Format a range as an "A1:B2"-style ref (inverse of parseRange). */
+export function formatRange(r: CellRange): string {
+  return formatCellRef(r.startRow, r.startCol) + ":" + formatCellRef(r.endRow, r.endCol);
+}
+
+/** True if the two ranges share at least one cell. */
+export function rangesIntersect(a: CellRange, b: CellRange): boolean {
+  return (
+    a.startRow <= b.endRow &&
+    a.endRow >= b.startRow &&
+    a.startCol <= b.endCol &&
+    a.endCol >= b.startCol
   );
 }
 

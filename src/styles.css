@@ -7,7 +7,12 @@
    matched-text highlighting inside .xg-cell; .xg-tb-fmt-item/-check/
    -example for the toolbar "More formats" dropdown rows (check column,
    label, right-aligned example), layered on the existing .xg-tb-menu
-   popover styles. */
+   popover styles. Added .xg-tb-font-label (truncated font-family button
+   label); .xg-tb-borders/-border-presets/-border-options/-border-widths
+   and .xg-tb-width-item(--on) for the borders dropdown (preset list, color
+   palette reuse, thin/medium/thick selector); .xg-body--painting (crosshair
+   cursor while the format painter is armed). Merged-cell rendering reuses
+   .xg-cell unmodified — a merge block is just a wider/taller cell div. */
 
 .xg-root {
   display: flex;
@@ -238,6 +243,63 @@
   padding-left: 16px;
   color: #8a9099;
   font-size: 11px;
+}
+
+/* Font-family toolbar button label: fixed width so the button doesn't
+   reflow as the active cell's font name changes. */
+.xg-tb-font-label {
+  display: inline-block;
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* Borders dropdown: preset list, then a divider, then color + thickness. */
+.xg-tb-borders {
+  min-width: 168px;
+}
+
+.xg-tb-border-presets {
+  display: flex;
+  flex-direction: column;
+}
+
+.xg-tb-border-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #eceef1;
+}
+
+.xg-tb-border-widths {
+  display: flex;
+  gap: 4px;
+}
+
+.xg-tb-width-item {
+  border: 1px solid #dcdfe3;
+  background: #fff;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  color: #3a3f45;
+  cursor: pointer;
+}
+
+.xg-tb-width-item:hover {
+  background: #f2f3f5;
+}
+
+.xg-tb-width-item--on {
+  background: #e8f1fb;
+  border-color: #1a73e8;
+  color: #1a73e8;
 }
 
 /* Right-aligned toolbar search box */
@@ -600,6 +662,10 @@
   overflow: auto;
   outline: none;
   background: #fff;
+}
+
+.xg-body--painting {
+  cursor: crosshair;
 }
 
 /* Frozen panes */

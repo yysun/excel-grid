@@ -1,24 +1,40 @@
 // Excel .xlsx (OOXML SpreadsheetML) serialization for GridSnapshot, with
 // zero runtime dependencies (ZIP layer in ./zip on native compression
 // streams, XML parsing via the platform DOMParser).
-// Features: workbookToXlsx (N named sheets; one shared interned styles.xml;
-// inline strings; formulas with cached values computed by a headless
-// GridStore; column widths) and xlsxToWorkbook (every worksheet in
-// workbook order; shared strings incl. rich-text runs; shared formulas
-// expanded via adjustFormula; builtin + custom number-format mapping back
-// to NumFmt; 1904 date system; apostrophe-escape guard for literal "="
-// strings). snapshotToXlsx/xlsxToSnapshot are single-sheet convenience
-// wrappers over the workbook functions, kept for backward compatibility.
-// Unsupported inputs (theme/indexed colors, unknown format codes) degrade
-// to defaults instead of failing.
-// Recent changes: added multi-sheet workbookToXlsx/xlsxToWorkbook; style
-// interning is now workbook-scoped and shared across sheets.
+// Features: workbookToXlsx (N named sheets; one shared interned styles.xml
+// incl. per-side borders and font family; inline strings; formulas with
+// cached values computed by a headless GridStore; column widths; merged
+// ranges as <mergeCells>) and xlsxToWorkbook (every worksheet in workbook
+// order; shared strings incl. rich-text runs; shared formulas expanded via
+// adjustFormula; builtin + custom number-format mapping back to NumFmt;
+// borders/font-name/merges parsed back onto CellStyle/GridSnapshot; 1904
+// date system; apostrophe-escape guard for literal "=" strings).
+// snapshotToXlsx/xlsxToSnapshot are single-sheet convenience wrappers over
+// the workbook functions, kept for backward compatibility. Unsupported
+// inputs (theme/indexed colors, unknown format codes, non-thin/medium/thick
+// border styles) degrade to defaults instead of failing.
+// Recent changes: added a `borders` interning table (parallel to
+// fonts/fills) feeding `borderId` on each `<xf>` (was hardcoded to 0);
+// `<font><name>` now round-trips CellStyle.fontFamily instead of always
+// writing "Calibri"; `buildSheetXml`/`parseSheetXml` now write/read
+// `<mergeCells>` from/to GridSnapshot.merges.
 
 import { adjustFormula } from "../formula/adjust";
 import { GridStore, type RawChange } from "../state/GridStore";
-import type { CellStyle, GridSnapshot, HAlign, VAlign, XlsxSheet } from "../types";
-import { formatCellRef, parseCellRef } from "./cellRef";
+import type {
+  BorderLineStyle,
+  BorderSide,
+  CellBorder,
+  CellStyle,
+  GridSnapshot,
+  HAlign,
+  VAlign,
+  XlsxSheet,
+} from "../types";
+import { formatCellRef, parseCellRef, parseRange } from "./cellRef";
 import { createZip, readZip } from "./zip";
+
+const BORDER_LINE_STYLES: BorderLineStyle[] = ["thin", "medium", "thick"];
 
 // Row/col counts passed to adjustFormula when expanding shared formulas:
 // Excel's own sheet limits, so any in-bounds Excel ref stays in bounds.
@@ -190,9 +206,16 @@ interface CellOut {
   styleIdx: number; // 0 = default xf
 }
 
+/** One `<left>`/`<right>`/`<top>`/`<bottom>` border-side element, or "" when unset. */
+function borderSideXml(tag: string, side: BorderSide | undefined): string {
+  if (!side) return `<${tag}/>`;
+  const argb = side.color ? cssToArgb(side.color) : null;
+  return `<${tag} style="${side.style}">${argb ? `<color rgb="${argb}"/>` : ""}</${tag}>`;
+}
+
 /** Workbook-scoped style interner shared by every sheet in a workbook. */
 function createStyleInterner() {
-  // Intern styles: numFmt codes -> ids from 164, fonts, fills, cellXfs.
+  // Intern styles: numFmt codes -> ids from 164, fonts, fills, borders, cellXfs.
   const customCodes = new Map<string, number>();
   const fonts: string[] = ['<font><sz val="11"/><name val="Calibri"/></font>'];
   const fontIdx = new Map<string, number>();
@@ -201,6 +224,8 @@ function createStyleInterner() {
     '<fill><patternFill patternType="gray125"/></fill>',
   ];
   const fillIdx = new Map<string, number>();
+  const borders: string[] = ["<border/>"];
+  const borderIdx = new Map<string, number>();
   const xfs: string[] = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'];
   const xfIdx = new Map<string, number>();
 
@@ -219,7 +244,10 @@ function createStyleInterner() {
     }
 
     let fontId = 0;
-    if (style.bold || style.italic || style.underline || style.strike || style.fontSize || style.color) {
+    if (
+      style.bold || style.italic || style.underline || style.strike ||
+      style.fontSize || style.color || style.fontFamily
+    ) {
       const argb = style.color ? cssToArgb(style.color) : null;
       const fontXml =
         "<font>" +
@@ -229,7 +257,7 @@ function createStyleInterner() {
         (style.strike ? "<strike/>" : "") +
         (style.fontSize ? `<sz val="${style.fontSize * 0.75}"/>` : '<sz val="11"/>') +
         (argb ? `<color rgb="${argb}"/>` : "") +
-        '<name val="Calibri"/></font>';
+        `<name val="${escXml(style.fontFamily ?? "Calibri")}"/></font>`;
       const f = fontIdx.get(fontXml);
       if (f !== undefined) fontId = f;
       else {
@@ -251,6 +279,24 @@ function createStyleInterner() {
       }
     }
 
+    let borderId = 0;
+    if (style.border && Object.keys(style.border).length > 0) {
+      const borderXml =
+        "<border>" +
+        borderSideXml("left", style.border.left) +
+        borderSideXml("right", style.border.right) +
+        borderSideXml("top", style.border.top) +
+        borderSideXml("bottom", style.border.bottom) +
+        "</border>";
+      const b = borderIdx.get(borderXml);
+      if (b !== undefined) borderId = b;
+      else {
+        borderId = borders.length;
+        borders.push(borderXml);
+        borderIdx.set(borderXml, borderId);
+      }
+    }
+
     const align = style.align || style.valign || style.wrap;
     const alignment = align
       ? "<alignment" +
@@ -260,10 +306,11 @@ function createStyleInterner() {
         "/>"
       : "";
     const xf =
-      `<xf numFmtId="${numFmtId}" fontId="${fontId}" fillId="${fillId}" borderId="0" xfId="0"` +
+      `<xf numFmtId="${numFmtId}" fontId="${fontId}" fillId="${fillId}" borderId="${borderId}" xfId="0"` +
       (numFmtId ? ' applyNumberFormat="1"' : "") +
       (fontId ? ' applyFont="1"' : "") +
       (fillId ? ' applyFill="1"' : "") +
+      (borderId ? ' applyBorder="1"' : "") +
       (alignment ? ` applyAlignment="1">${alignment}</xf>` : "/>");
     const idx = xfs.length;
     xfs.push(xf);
@@ -271,7 +318,7 @@ function createStyleInterner() {
     return idx;
   };
 
-  return { customCodes, fonts, fills, xfs, internXf };
+  return { customCodes, fonts, fills, borders, xfs, internXf };
 }
 
 /**
@@ -384,11 +431,19 @@ function buildSheetXml(snapshot: GridSnapshot, internXf: (style: CellStyle) => n
     rowsXml.push(`<row r="${row + 1}"${rowAttrs}>${cells.join("")}</row>`);
   }
 
+  const merges = snapshot.merges ?? [];
+  const mergesXml = merges.length
+    ? `<mergeCells count="${merges.length}">` +
+      merges.map((ref) => `<mergeCell ref="${escXml(ref)}"/>`).join("") +
+      "</mergeCells>"
+    : "";
+
   return (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
     colsXml +
     `<sheetData>${rowsXml.join("")}</sheetData>` +
+    mergesXml +
     "</worksheet>"
   );
 }
@@ -399,7 +454,7 @@ function buildSheetXml(snapshot: GridSnapshot, internXf: (style: CellStyle) => n
  * values computed by a headless GridStore.
  */
 export async function workbookToXlsx(sheets: XlsxSheet[]): Promise<Uint8Array> {
-  const { customCodes, fonts, fills, xfs, internXf } = createStyleInterner();
+  const { customCodes, fonts, fills, borders, xfs, internXf } = createStyleInterner();
   const sheetXmls = sheets.map((s) => buildSheetXml(s.snapshot, internXf));
 
   // ---- styles XML (shared across all sheets) ----
@@ -416,7 +471,7 @@ export async function workbookToXlsx(sheets: XlsxSheet[]): Promise<Uint8Array> {
     numFmtsXml +
     `<fonts count="${fonts.length}">${fonts.join("")}</fonts>` +
     `<fills count="${fills.length}">${fills.join("")}</fills>` +
-    '<borders count="1"><border/></borders>' +
+    `<borders count="${borders.length}">${borders.join("")}</borders>` +
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
     `<cellXfs count="${xfs.length}">${xfs.join("")}</cellXfs>` +
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
@@ -578,6 +633,8 @@ function parseStyles(doc: Document): XfInfo[] {
       if (Number.isFinite(sz) && sz > 0 && sz !== 11) s.fontSize = Math.round(sz / 0.75);
       const color = argbToCss(tags(font, "color")[0]?.getAttribute("rgb") ?? null);
       if (color) s.color = color;
+      const name = tags(font, "name")[0]?.getAttribute("val");
+      if (name && name !== "Calibri") s.fontFamily = name;
       fontStyles.push(s);
     }
   }
@@ -595,6 +652,29 @@ function parseStyles(doc: Document): XfInfo[] {
     }
   }
 
+  const borderStyles: (CellBorder | undefined)[] = [];
+  const bordersEl = tags(doc, "borders")[0];
+  if (bordersEl) {
+    for (const border of tags(bordersEl, "border")) {
+      const sides: CellBorder = {};
+      const sideTags: Array<[keyof CellBorder, string]> = [
+        ["left", "left"],
+        ["right", "right"],
+        ["top", "top"],
+        ["bottom", "bottom"],
+      ];
+      for (const [key, tag] of sideTags) {
+        const el = tags(border, tag)[0];
+        const styleAttr = el?.getAttribute("style");
+        if (styleAttr && BORDER_LINE_STYLES.includes(styleAttr as BorderLineStyle)) {
+          const color = argbToCss(tags(el, "color")[0]?.getAttribute("rgb") ?? null);
+          sides[key] = { style: styleAttr as BorderLineStyle, ...(color ? { color } : {}) };
+        }
+      }
+      borderStyles.push(Object.keys(sides).length ? sides : undefined);
+    }
+  }
+
   const xfInfos: XfInfo[] = [];
   const cellXfs = tags(doc, "cellXfs")[0];
   if (cellXfs) {
@@ -607,6 +687,8 @@ function parseStyles(doc: Document): XfInfo[] {
       Object.assign(style, fontStyles[Number(xf.getAttribute("fontId") ?? "-1")] ?? {});
       const bg = fillStyles[Number(xf.getAttribute("fillId") ?? "-1")] ?? null;
       if (bg) style.background = bg;
+      const border = borderStyles[Number(xf.getAttribute("borderId") ?? "-1")];
+      if (border) style.border = border;
       const alignment = tags(xf, "alignment")[0];
       if (alignment) {
         const h = alignment.getAttribute("horizontal") as HAlign | null;
@@ -754,7 +836,16 @@ function parseSheetXml(
     }
   }
 
-  return { cells, styles, colWidths, rowHeights };
+  const merges: string[] = [];
+  const mergeCellsEl = tags(sheet, "mergeCells")[0];
+  if (mergeCellsEl) {
+    for (const mc of tags(mergeCellsEl, "mergeCell")) {
+      const ref = mc.getAttribute("ref");
+      if (ref && parseRange(ref)) merges.push(ref);
+    }
+  }
+
+  return { cells, styles, colWidths, rowHeights, merges };
 }
 
 /**

@@ -32,6 +32,7 @@ describe("getSnapshot", () => {
       styles: { A1: { bold: true, numFmt: "currency" } },
       colWidths: { 0: 150 },
       rowHeights: {},
+      merges: [],
     });
   });
 
@@ -42,6 +43,7 @@ describe("getSnapshot", () => {
       styles: {},
       colWidths: {},
       rowHeights: {},
+      merges: [],
     });
 
     store.setCells([{ row: 2, col: 3, raw: "x" }]);

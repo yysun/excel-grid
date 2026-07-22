@@ -1,14 +1,18 @@
 // Shared public + internal types for the excel-grid library.
 // Features: cell/coord/range models, change events, cell style model
 // (bold/italic/underline/strike, font size, colors, alignment, wrapping,
-// number formats), full-state GridSnapshot, component props and imperative
-// handle types re-exported from src/index.ts.
+// number formats, per-side borders, font family), full-state GridSnapshot
+// (including merged ranges), component props and imperative handle types
+// re-exported from src/index.ts.
 // Recent changes: added GridSnapshot (cells + styles + colWidths) with the
 // initialState prop, onStateChange prop (fires on every store mutation,
 // including style-only and width-only edits), getSnapshot() on the handle,
 // and a display field on getData() entries — all additive, for host-app
 // persistence such as the demo's localStorage autosave. Added XlsxSheet
-// (name + GridSnapshot) for multi-sheet workbook read/write.
+// (name + GridSnapshot) for multi-sheet workbook read/write. Added
+// CellStyle.border (per-side thin/medium/thick + color) and
+// CellStyle.fontFamily, and GridSnapshot.merges (A1:B2-style range refs)
+// for merged cells.
 
 /** A computed scalar value a cell can hold. */
 export type CellValue = string | number | boolean | null;
@@ -56,6 +60,24 @@ export type HAlign = "left" | "center" | "right";
 /** Vertical cell alignment. */
 export type VAlign = "top" | "middle" | "bottom";
 
+/** Border line thickness; solid lines only (no dashed/dotted/double). */
+export type BorderLineStyle = "thin" | "medium" | "thick";
+
+/** One side of a cell's border. */
+export interface BorderSide {
+  style: BorderLineStyle;
+  /** Line color (CSS color); defaults to black when rendered if absent. */
+  color?: string;
+}
+
+/** Per-side border spec for a cell; an absent side means "no border". */
+export interface CellBorder {
+  top?: BorderSide;
+  right?: BorderSide;
+  bottom?: BorderSide;
+  left?: BorderSide;
+}
+
 /**
  * Visual style of one cell, stored sparsely and independent of the cell's
  * value (an empty cell can carry a fill color). All fields optional; an
@@ -68,6 +90,8 @@ export interface CellStyle {
   strike?: boolean;
   /** Font size in px. */
   fontSize?: number;
+  /** Font family (bare name, e.g. "Arial"); default is the grid's stack. */
+  fontFamily?: string;
   /** Text color (CSS color). */
   color?: string;
   /** Fill / background color (CSS color). */
@@ -79,6 +103,8 @@ export interface CellStyle {
   numFmt?: NumFmt;
   /** Fixed decimal places for numeric display (0-10). */
   decimals?: number;
+  /** Per-side borders. */
+  border?: CellBorder;
 }
 
 /**
@@ -92,6 +118,8 @@ export interface GridSnapshot {
   styles: Record<string, CellStyle>;
   colWidths: Record<number, number>;
   rowHeights: Record<number, number>;
+  /** Merged ranges as "A1:B2"-style refs. */
+  merges?: string[];
 }
 
 /** One named sheet of a multi-sheet workbook (see workbookToXlsx/xlsxToWorkbook). */

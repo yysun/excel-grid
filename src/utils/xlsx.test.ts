@@ -226,6 +226,49 @@ describe("snapshotToXlsx -> xlsxToSnapshot round-trip", () => {
     expect(back.colWidths[1]).toBeUndefined();
   });
 
+  it("preserves font family and per-side borders", async () => {
+    const withFormatting: GridSnapshot = {
+      cells: { A1: "x", B1: "y" },
+      styles: {
+        A1: {
+          fontFamily: "Arial",
+          border: {
+            top: { style: "thin", color: "#ff0000" },
+            left: { style: "thick" },
+          },
+        },
+        B1: { border: { bottom: { style: "medium", color: "#00ff00" } } },
+      },
+      colWidths: {},
+      rowHeights: {},
+      merges: [],
+    };
+    const bytes = await snapshotToXlsx(withFormatting);
+    const back = await xlsxToSnapshot(bytes);
+
+    expect(back.styles.A1?.fontFamily).toBe("Arial");
+    expect(back.styles.A1?.border).toEqual({
+      top: { style: "thin", color: "#ff0000" },
+      left: { style: "thick" },
+    });
+    expect(back.styles.B1?.border).toEqual({
+      bottom: { style: "medium", color: "#00ff00" },
+    });
+  });
+
+  it("preserves merged ranges", async () => {
+    const withMerges: GridSnapshot = {
+      cells: { A1: "hi" },
+      styles: {},
+      colWidths: {},
+      rowHeights: {},
+      merges: ["A1:B2", "D4:D6"],
+    };
+    const bytes = await snapshotToXlsx(withMerges);
+    const back = await xlsxToSnapshot(bytes);
+    expect(back.merges).toEqual(["A1:B2", "D4:D6"]);
+  });
+
   it("caches empty (not #REF!) for refs beyond the used range", async () => {
     // A1 references empty C1 outside the 1x1 used range; the cached value
     // must match what the real (larger) grid shows, not a bounds error.
@@ -262,7 +305,7 @@ describe("snapshotToXlsx -> xlsxToSnapshot round-trip", () => {
 // ---- multi-sheet ----
 
 describe("workbookToXlsx -> xlsxToWorkbook round-trip", () => {
-  const blank: GridSnapshot = { cells: {}, styles: {}, colWidths: {}, rowHeights: {} };
+  const blank: GridSnapshot = { cells: {}, styles: {}, colWidths: {}, rowHeights: {}, merges: [] };
 
   it("preserves sheet count, names, order, and per-sheet content", async () => {
     const sheets: XlsxSheet[] = [

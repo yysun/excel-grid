@@ -1,20 +1,26 @@
 // ExcelGrid: the Excel-Web-style spreadsheet component.
 // Features: virtualized cells + sticky-style header strips, formula bar with
 // name box, mouse/keyboard selection (cell, range, row/col via header drag,
-// all), Excel-style navigation (hidden rows/cols skipped), in-cell +
-// formula-bar editing, formula recalculation via GridStore, TSV clipboard
-// (native copy/cut/paste events + internal fallback), undo/redo shortcuts,
-// column resize grips, fill handle with relative-reference adjustment, a
-// WeCom-style formatting toolbar, per-cell CellStyle rendering, right-click
-// context menus (cell / row header / column header) driving insert/delete/
-// move/hide/freeze/sort/filter/clipboard, and frozen panes rendered as
-// transform-synced overlay panes.
-// Recent changes: added persistence wiring — the initialState prop seeds a
-// full GridSnapshot (cells, styles via initStyle, column widths) at store
-// creation after initialCells; onStateChange subscribes to every store
-// notify (covering style-only and width-only edits); the handle gained
-// getSnapshot() and getData() entries now include format-aware display
-// text.
+// all), Excel-style navigation (hidden rows/cols and merges skipped/stepped
+// as a unit), in-cell + formula-bar editing, formula recalculation via
+// GridStore, TSV clipboard (native copy/cut/paste events + internal
+// fallback), undo/redo shortcuts, column resize grips, fill handle with
+// relative-reference adjustment, a WeCom-style formatting toolbar, per-cell
+// CellStyle rendering (including per-side borders and font family),
+// right-click context menus (cell / row header / column header) driving
+// insert/delete/move/hide/freeze/sort/filter/clipboard/merge, merged-cell
+// rendering and selection, a format-painter destination-click handler, and
+// frozen panes rendered as transform-synced overlay panes.
+// Recent changes: added merged-cell support — renderCells now draws one
+// spanning block per merge (scanning store.getMerges() per pane call) and
+// skips covered cells; selection splits into `rawSelRange` (the literal
+// drag/selection, driving clipboard and all count-based structural menu
+// actions) and merge-expanded `selRange` (driving rendering, Delete/
+// Backspace, and Toolbar style actions), with `active` resolving to a
+// merge's anchor and arrow-key `move()` stepping from a merge's far edge.
+// Added cellStyleCss border/fontFamily rendering, a format-painter mouse
+// handler in beginSelectDrag (arms via Toolbar, applies via drag-end,
+// disarms on Escape), and initialState.merges seeding.
 
 import {
   forwardRef,
@@ -33,6 +39,8 @@ import {
   type SortDir,
 } from "../state/GridStore";
 import type {
+  BorderLineStyle,
+  BorderSide,
   CellCoord,
   CellRange,
   CellStyle,
@@ -50,7 +58,9 @@ import {
   formatCellRef,
   normalizeRange,
   parseCellRef,
+  parseRange,
   rangeContains,
+  rangesIntersect,
 } from "../utils/cellRef";
 import { parseTSV, toTSV } from "../utils/tsv";
 import { buildAxisMetrics, useVirtualRange } from "./useVirtualRange";
@@ -131,6 +141,38 @@ interface MenuState {
 const clamp = (v: number, lo: number, hi: number): number =>
   Math.max(lo, Math.min(hi, v));
 
+/**
+ * Union `range` with every merge it intersects, repeatedly until stable.
+ * Merges are always mutually disjoint (mergeCells replaces any it
+ * overlaps), so a single pass over `merges` is always sufficient.
+ */
+function expandForMerges(range: CellRange, merges: CellRange[]): CellRange {
+  let r = range;
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const m of merges) {
+      if (!rangesIntersect(r, m)) continue;
+      const next: CellRange = {
+        startRow: Math.min(r.startRow, m.startRow),
+        endRow: Math.max(r.endRow, m.endRow),
+        startCol: Math.min(r.startCol, m.startCol),
+        endCol: Math.max(r.endCol, m.endCol),
+      };
+      if (
+        next.startRow !== r.startRow ||
+        next.endRow !== r.endRow ||
+        next.startCol !== r.startCol ||
+        next.endCol !== r.endCol
+      ) {
+        r = next;
+        grew = true;
+      }
+    }
+  }
+  return r;
+}
+
 export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
   function ExcelGrid(props, ref) {
     const {
@@ -175,6 +217,10 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         for (const [row, height] of Object.entries(initialState.rowHeights ?? {})) {
           if (typeof height === "number") store.setRowHeight(Number(row), height);
         }
+        const merges = (initialState.merges ?? [])
+          .map(parseRange)
+          .filter((r): r is CellRange => r !== null);
+        store.initMerges(merges);
       }
       storeRef.current = store;
     }
@@ -276,11 +322,27 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       return () => ro.disconnect();
     }, []);
 
-    const selRange = useMemo(
+    const merges = store.getMerges();
+
+    // The literal dragged/selected range: drives clipboard and every
+    // count-based structural menu action (insert/delete/move/hide/freeze/
+    // sort rows or columns) so those never silently widen just because the
+    // selection touches a merge.
+    const rawSelRange = useMemo(
       () => normalizeRange(selection.anchor, selection.focus),
       [selection]
     );
-    const active = selection.anchor;
+    // Merge-expanded selection: drives rendering, Delete/Backspace,
+    // Toolbar style actions, and format-painter's destination capture.
+    const selRange = useMemo(
+      () => expandForMerges(rawSelRange, merges),
+      [rawSelRange, merges]
+    );
+    // The active cell, resolved to its merge's anchor when covered.
+    const active = useMemo(() => {
+      const m = store.getMergeAt(selection.anchor.row, selection.anchor.col);
+      return m ? { row: m.startRow, col: m.startCol } : selection.anchor;
+    }, [selection.anchor, store, version]);
 
     // ---- helpers ----
 
@@ -398,7 +460,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
     // ---- clipboard ----
 
     const buildTSV = useCallback((): { tsv: string; source: CellRange } => {
-      const r = selRange;
+      const r = rawSelRange;
       const matrix: string[][] = [];
       for (let row = r.startRow; row <= r.endRow; row++) {
         const line: string[] = [];
@@ -408,7 +470,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         matrix.push(line);
       }
       return { tsv: toTSV(matrix), source: r };
-    }, [selRange, store]);
+    }, [rawSelRange, store]);
 
     const applyPaste = useCallback(
       (text: string) => {
@@ -416,7 +478,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         const isInternal = internal !== null && internal.tsv === text;
         const matrix = parseTSV(text);
         if (matrix.length === 0) return;
-        const target: CellCoord = { row: selRange.startRow, col: selRange.startCol };
+        const target: CellCoord = { row: rawSelRange.startRow, col: rawSelRange.startCol };
         const changes: RawChange[] = [];
         const pastedKeys = new Set<string>();
         for (let r = 0; r < matrix.length; r++) {
@@ -465,7 +527,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         );
         setSelection({ anchor: target, focus: { row: endRow, col: endCol } });
       },
-      [selRange, store, rows, cols]
+      [rawSelRange, store, rows, cols]
     );
 
     /** Copy/cut the selection to the internal + async system clipboard. */
@@ -543,10 +605,18 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         const move = (dr: number, dc: number, extend = false) => {
           e.preventDefault();
           const base = extend ? selection.focus : active;
+          // Step from the far edge of base's merge (if any) in the travel
+          // direction, so leaving a multi-row/col merge advances exactly
+          // one line past it instead of possibly landing on another cell
+          // still inside the same merge (which would resolve right back to
+          // the same anchor).
+          const m = store.getMergeAt(base.row, base.col);
+          const fromRow = m ? (dr > 0 ? m.endRow : dr < 0 ? m.startRow : base.row) : base.row;
+          const fromCol = m ? (dc > 0 ? m.endCol : dc < 0 ? m.startCol : base.col) : base.col;
           setActive(
             {
-              row: dr === 0 ? base.row : stepVisible(base.row, dr, rows, isRowHidden),
-              col: dc === 0 ? base.col : stepVisible(base.col, dc, cols, isColHidden),
+              row: dr === 0 ? base.row : stepVisible(fromRow, dr, rows, isRowHidden),
+              col: dc === 0 ? base.col : stepVisible(fromCol, dc, cols, isColHidden),
             },
             extend
           );
@@ -586,6 +656,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
             return store.clearRange(selRange);
           case "Escape":
             internalClipboard.current = null;
+            if (store.isFormatPainterArmed()) store.disarmFormatPainter();
             return;
         }
         if (mod) {
@@ -664,17 +735,35 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         const onUp = () => {
           window.removeEventListener("mousemove", onMove);
           window.removeEventListener("mouseup", onUp);
+          // Read the armed source and the just-settled selection fresh here
+          // (not captured earlier in the drag) — store is a stable ref, so
+          // this reads its current state, not a stale closure.
+          if (store.isFormatPainterArmed()) {
+            const source = store.getFormatPainterSource()!;
+            const style = store.getStyle(source.startRow, source.startCol);
+            setSelection((s) => {
+              const dest = expandForMerges(
+                normalizeRange(s.anchor, s.focus),
+                store.getMerges()
+              );
+              store.replaceStyle(dest, style);
+              return s;
+            });
+            store.disarmFormatPainter();
+          }
         };
         window.addEventListener("mousemove", onMove);
         window.addEventListener("mouseup", onUp);
       },
-      [editor, coordFromMouse, setActive]
+      [editor, coordFromMouse, setActive, store]
     );
 
     const handleDoubleClick = useCallback(
       (e: React.MouseEvent) => {
         const c = coordFromMouse(e);
-        openEditor(c.row, c.col, store.getRaw(c.row, c.col), false);
+        const m = store.getMergeAt(c.row, c.col);
+        const anchor = m ? { row: m.startRow, col: m.startCol } : c;
+        openEditor(anchor.row, anchor.col, store.getRaw(anchor.row, anchor.col), false);
       },
       [coordFromMouse, openEditor, store]
     );
@@ -866,25 +955,25 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         if (editor) editorRef.current?.commit();
         const fullSpan =
           axis === "row"
-            ? selRange.startCol === 0 && selRange.endCol === cols - 1
-            : selRange.startRow === 0 && selRange.endRow === rows - 1;
+            ? rawSelRange.startCol === 0 && rawSelRange.endCol === cols - 1
+            : rawSelRange.startRow === 0 && rawSelRange.endRow === rows - 1;
         const inside =
           axis === "row"
-            ? index >= selRange.startRow && index <= selRange.endRow
-            : index >= selRange.startCol && index <= selRange.endCol;
+            ? index >= rawSelRange.startRow && index <= rawSelRange.endRow
+            : index >= rawSelRange.startCol && index <= rawSelRange.endCol;
         if (!(fullSpan && inside)) {
           if (axis === "row") selectRow(index);
           else selectColumn(index);
         }
         setMenu({ x: e.clientX, y: e.clientY, zone: axis });
       },
-      [editor, selRange, rows, cols, selectRow, selectColumn]
+      [editor, rawSelRange, rows, cols, selectRow, selectColumn]
     );
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
     const menuItems = useMemo((): MenuItem[] => {
       if (!menu) return [];
-      const r = selRange;
+      const r = rawSelRange;
       const clipboardItems: MenuItem[] = [
         { label: "Cut", onClick: () => copySelection(true) },
         { label: "Copy", onClick: () => copySelection(false) },
@@ -986,6 +1075,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       const nC = r.endCol - r.startCol + 1;
       const rowWord = nR === 1 ? "row" : `${nR} rows`;
       const colWord = nC === 1 ? "column" : `${nC} columns`;
+      const activeMerge = store.getMergeAt(active.row, active.col);
       return [
         ...clipboardItems,
         "sep",
@@ -993,6 +1083,13 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         { label: `Insert ${colWord} left`, onClick: () => store.insertCols(r.startCol, nC) },
         { label: `Delete ${rowWord}`, onClick: () => store.deleteRows(r.startRow, r.endRow) },
         { label: `Delete ${colWord}`, onClick: () => store.deleteCols(r.startCol, r.endCol) },
+        "sep",
+        {
+          label: activeMerge ? "Unmerge cells" : "Merge cells",
+          disabled: !activeMerge && nR * nC < 2,
+          onClick: () =>
+            activeMerge ? store.unmergeCells(activeMerge) : store.mergeCells(r),
+        },
         "sep",
         {
           label: "Sort range A→Z",
@@ -1023,7 +1120,7 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       ];
     }, [
       menu,
-      selRange,
+      rawSelRange,
       active,
       store,
       rows,
@@ -1066,6 +1163,47 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
     // highlighted spans line up exactly with isCellMatched.
     const searchQuery = store.getSearchQuery().trim();
 
+    /** Build one cell's rendered div; shared by the normal loop and merge blocks. */
+    const buildCellNode = (
+      row: number,
+      col: number,
+      left: number,
+      top: number,
+      width: number,
+      height: number,
+      extraClass: string
+    ): React.ReactNode => {
+      const display = store.getDisplay(row, col);
+      const cell = display === "" ? null : store.getCell(row, col);
+      const isNum =
+        cell !== null && !cell.error && typeof cell.value === "number";
+      const cs = store.getStyle(row, col);
+      const content =
+        display !== "" && searchQuery && store.isCellMatched(row, col)
+          ? highlightMatches(display, searchQuery)
+          : display;
+      return (
+        <div
+          key={cellKey(row, col)}
+          className={
+            "xg-cell" +
+            extraClass +
+            (isNum ? " xg-cell--num" : "") +
+            (cell?.error ? " xg-cell--err" : "")
+          }
+          style={{
+            left,
+            top,
+            width,
+            height,
+            ...(cs ? cellStyleCss(cs) : null),
+          }}
+        >
+          {content}
+        </div>
+      );
+    };
+
     const renderCells = (
       r0: number,
       r1: number,
@@ -1073,37 +1211,48 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
       c1: number
     ): React.ReactNode[] => {
       const out: React.ReactNode[] = [];
+      // Render merges intersecting this pane's sub-rect first (scanning the
+      // full merges list, not just anchors inside [r0,r1]x[c0,c1] — a
+      // merge's anchor can scroll out of the virtualized window while the
+      // rest of the block is still visible), tracking every covered
+      // coordinate so the normal per-cell loop below skips them.
+      const covered = new Set<string>();
+      for (const m of merges) {
+        if (m.endRow < r0 || m.startRow > r1 || m.endCol < c0 || m.startCol > c1) {
+          continue;
+        }
+        out.push(
+          buildCellNode(
+            m.startRow,
+            m.startCol,
+            colMetrics.offsets[m.startCol],
+            rowMetrics.offsets[m.startRow],
+            colMetrics.offsets[m.endCol + 1] - colMetrics.offsets[m.startCol],
+            rowMetrics.offsets[m.endRow + 1] - rowMetrics.offsets[m.startRow],
+            " xg-cell--merged"
+          )
+        );
+        for (let row = Math.max(0, m.startRow); row <= Math.min(rows - 1, m.endRow); row++) {
+          for (let col = Math.max(0, m.startCol); col <= Math.min(cols - 1, m.endCol); col++) {
+            covered.add(cellKey(row, col));
+          }
+        }
+      }
       for (let row = r0; row <= r1; row++) {
         if (rowHeights[row] === 0) continue;
         for (let col = c0; col <= c1; col++) {
           if (colWidths[col] === 0) continue;
-          const display = store.getDisplay(row, col);
-          const cell = display === "" ? null : store.getCell(row, col);
-          const isNum =
-            cell !== null && !cell.error && typeof cell.value === "number";
-          const cs = store.getStyle(row, col);
-          const content =
-            display !== "" && searchQuery && store.isCellMatched(row, col)
-              ? highlightMatches(display, searchQuery)
-              : display;
+          if (covered.has(cellKey(row, col))) continue;
           out.push(
-            <div
-              key={cellKey(row, col)}
-              className={
-                "xg-cell" +
-                (isNum ? " xg-cell--num" : "") +
-                (cell?.error ? " xg-cell--err" : "")
-              }
-              style={{
-                left: colMetrics.offsets[col],
-                top: rowMetrics.offsets[row],
-                width: colWidths[col],
-                height: rowHeights[row],
-                ...(cs ? cellStyleCss(cs) : null),
-              }}
-            >
-              {content}
-            </div>
+            buildCellNode(
+              row,
+              col,
+              colMetrics.offsets[col],
+              rowMetrics.offsets[row],
+              colWidths[col],
+              rowHeights[row],
+              ""
+            )
           );
         }
       }
@@ -1265,7 +1414,9 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
     });
 
     const selRect = rectForRange(selRange);
-    const activeRect = rectForRange(normalizeRange(active, active));
+    const activeRect = rectForRange(
+      store.getMergeAt(active.row, active.col) ?? normalizeRange(active, active)
+    );
     const isMultiCell =
       selRange.startRow !== selRange.endRow || selRange.startCol !== selRange.endCol;
 
@@ -1295,7 +1446,13 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
         onPaste={handlePaste}
       >
         {toolbar && (
-          <Toolbar store={store} selRange={selRange} active={active} rows={rows} />
+          <Toolbar
+            store={store}
+            selRange={selRange}
+            rawSelRange={rawSelRange}
+            active={active}
+            rows={rows}
+          />
         )}
         <div className="xg-formula-bar">
           <div className="xg-name-box">{formatCellRef(active.row, active.col)}</div>
@@ -1384,7 +1541,10 @@ export const ExcelGrid = forwardRef<ExcelGridHandle, ExcelGridProps>(
           <div className="xg-bodywrap">
             <div
               ref={bodyRef}
-              className="xg-body"
+              className={
+                "xg-body" +
+                (store.isFormatPainterArmed() ? " xg-body--painting" : "")
+              }
               tabIndex={0}
               onScroll={(e) => {
                 const t = e.currentTarget;
@@ -1519,6 +1679,19 @@ const ALIGN_ITEMS: Record<VAlign, React.CSSProperties["alignItems"]> = {
   bottom: "flex-end",
 };
 
+const BORDER_WIDTH: Record<BorderLineStyle, number> = {
+  thin: 1,
+  medium: 2,
+  thick: 3,
+};
+
+/** CSS shorthand for one border side, or undefined to fall through to the
+ * default gridline (`.xg-cell`'s own border-right/border-bottom). */
+function borderSideCss(side: BorderSide | undefined): string | undefined {
+  if (!side) return undefined;
+  return `${BORDER_WIDTH[side.style]}px solid ${side.color ?? "#000000"}`;
+}
+
 /** Inline CSS for a cell's CellStyle (merged after positional styles). */
 function cellStyleCss(cs: CellStyle): React.CSSProperties {
   const deco = [cs.underline && "underline", cs.strike && "line-through"]
@@ -1529,6 +1702,7 @@ function cellStyleCss(cs: CellStyle): React.CSSProperties {
     fontStyle: cs.italic ? "italic" : undefined,
     textDecoration: deco || undefined,
     fontSize: cs.fontSize,
+    fontFamily: cs.fontFamily,
     color: cs.color,
     background: cs.background,
     justifyContent: cs.align ? JUSTIFY[cs.align] : undefined,
@@ -1538,6 +1712,10 @@ function cellStyleCss(cs: CellStyle): React.CSSProperties {
     alignItems: cs.valign ? ALIGN_ITEMS[cs.valign] : undefined,
     whiteSpace: cs.wrap ? "normal" : undefined,
     wordBreak: cs.wrap ? "break-word" : undefined,
+    borderTop: borderSideCss(cs.border?.top),
+    borderRight: borderSideCss(cs.border?.right),
+    borderBottom: borderSideCss(cs.border?.bottom),
+    borderLeft: borderSideCss(cs.border?.left),
   };
 }
 

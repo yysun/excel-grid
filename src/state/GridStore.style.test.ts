@@ -2,8 +2,11 @@
 // clearFormat, undo/redo integration with raw edits, number-format display
 // (percent/thousands/decimals, number/currency/scientific, and
 // date/time/datetime/duration serial rendering incl. negative fallback
-// and the .00+/.0- no-op), the style-cell cap, and the valign/wrap keys
-// added for the toolbar vertical-alignment and wrap buttons.
+// and the .00+/.0- no-op), the style-cell cap, the valign/wrap keys added
+// for the toolbar vertical-alignment and wrap buttons, per-side border
+// presets (applyBorder), format-painter's full-replace style commit
+// (replaceStyle), font-family styling via applyStyle, and the format-
+// painter's transient armed-source view state.
 
 import { describe, expect, it } from "vitest";
 import { GridStore, STYLE_CELL_CAP } from "./GridStore";
@@ -286,5 +289,163 @@ describe("number formats in getDisplay", () => {
     expect(store.getDisplay(2, 0)).toBe("#DIV/0!");
     expect(store.getDisplay(3, 0)).toBe("hello");
     expect(store.getRaw(1, 0)).toBe("=A1/B1"); // raw untouched
+  });
+});
+
+describe("font family", () => {
+  it("applies and clears fontFamily like any other style key", () => {
+    const store = makeStore();
+    store.applyStyle(cell(0, 0), { bold: true, fontFamily: "Arial" });
+    expect(store.getStyle(0, 0)).toEqual({ bold: true, fontFamily: "Arial" });
+    store.applyStyle(cell(0, 0), { fontFamily: undefined });
+    expect(store.getStyle(0, 0)).toEqual({ bold: true });
+  });
+});
+
+describe("applyBorder", () => {
+  const thin = { style: "thin" as const, color: "#000000" };
+  const thick = { style: "thick" as const, color: "#ff0000" };
+
+  it("'all' sets every side on every cell in the range", () => {
+    const store = makeStore();
+    store.applyBorder(range(0, 0, 1, 1), "all", thin);
+    for (const [r, c] of [[0, 0], [0, 1], [1, 0], [1, 1]]) {
+      expect(store.getStyle(r, c)?.border).toEqual({
+        top: thin, right: thin, bottom: thin, left: thin,
+      });
+    }
+  });
+
+  it("'outer' touches only the sides on the range boundary, leaving interior cells alone", () => {
+    const store = makeStore();
+    store.applyBorder(range(0, 0, 2, 2), "outer", thin);
+    // Corner cell: top+left only (its right/bottom are interior-facing).
+    expect(store.getStyle(0, 0)?.border).toEqual({ top: thin, left: thin });
+    // Edge-midpoint cell: top only.
+    expect(store.getStyle(0, 1)?.border).toEqual({ top: thin });
+    // Center cell: fully interior, untouched (no style record at all).
+    expect(store.getStyle(1, 1)).toBeNull();
+    // Bottom-right corner: bottom+right.
+    expect(store.getStyle(2, 2)?.border).toEqual({ bottom: thin, right: thin });
+  });
+
+  it("a single edge preset only touches that edge's cells and only that side", () => {
+    const store = makeStore();
+    store.applyBorder(range(0, 0, 2, 2), "top", thin);
+    expect(store.getStyle(0, 0)?.border).toEqual({ top: thin });
+    expect(store.getStyle(0, 1)?.border).toEqual({ top: thin });
+    expect(store.getStyle(1, 0)).toBeNull();
+    expect(store.getStyle(2, 0)).toBeNull();
+  });
+
+  it("leaves other sides of a cell untouched when applying a different edge", () => {
+    const store = makeStore();
+    store.applyBorder(cell(0, 0), "top", thin);
+    store.applyBorder(cell(0, 0), "left", thick);
+    expect(store.getStyle(0, 0)?.border).toEqual({ top: thin, left: thick });
+  });
+
+  it("'none' clears the border entirely regardless of cell position", () => {
+    const store = makeStore();
+    store.applyBorder(range(0, 0, 1, 1), "all", thin);
+    store.applyBorder(range(0, 0, 1, 1), "none", null);
+    for (const [r, c] of [[0, 0], [0, 1], [1, 0], [1, 1]]) {
+      expect(store.getStyle(r, c)?.border).toBeUndefined();
+    }
+  });
+
+  it("'none' preserves other style keys on the cell", () => {
+    const store = makeStore();
+    store.applyStyle(cell(0, 0), { bold: true });
+    store.applyBorder(cell(0, 0), "all", thin);
+    store.applyBorder(cell(0, 0), "none", null);
+    expect(store.getStyle(0, 0)).toEqual({ bold: true });
+  });
+
+  it("undoes and redoes as one action", () => {
+    const store = makeStore();
+    store.applyBorder(range(0, 0, 1, 1), "all", thin);
+    expect(store.getStyle(0, 0)?.border).toBeDefined();
+    store.undo();
+    expect(store.getStyle(0, 0)).toBeNull();
+    expect(store.getStyle(1, 1)).toBeNull();
+    store.redo();
+    expect(store.getStyle(0, 0)?.border).toEqual({
+      top: thin, right: thin, bottom: thin, left: thin,
+    });
+  });
+
+  it("is a no-op above the style cell cap", () => {
+    const store = new GridStore(1000, 1000, 100);
+    store.applyBorder(range(0, 0, 999, 999), "all", thin);
+    expect(store.getStyle(0, 0)).toBeNull();
+    expect(store.canUndo()).toBe(false);
+  });
+
+  it("does not record an undo step when re-applying an identical border", () => {
+    const store = makeStore();
+    store.applyBorder(range(0, 0, 1, 1), "all", thin);
+    store.applyBorder(range(0, 0, 1, 1), "all", { style: "thin", color: "#000000" });
+    store.undo();
+    expect(store.getStyle(0, 0)).toBeNull();
+    expect(store.canUndo()).toBe(false);
+  });
+});
+
+describe("replaceStyle", () => {
+  it("overwrites the destination's style outright, clearing omitted keys", () => {
+    const store = makeStore();
+    store.applyStyle(cell(1, 1), { italic: true, color: "#e60000" });
+    store.replaceStyle(cell(1, 1), { bold: true });
+    expect(store.getStyle(1, 1)).toEqual({ bold: true });
+  });
+
+  it("applies the same style to every cell in the destination range", () => {
+    const store = makeStore();
+    store.replaceStyle(range(0, 0, 1, 1), { bold: true, fontFamily: "Georgia" });
+    expect(store.getStyle(0, 0)).toEqual({ bold: true, fontFamily: "Georgia" });
+    expect(store.getStyle(1, 1)).toEqual({ bold: true, fontFamily: "Georgia" });
+  });
+
+  it("clears style with a null replacement", () => {
+    const store = makeStore();
+    store.applyStyle(cell(0, 0), { bold: true });
+    store.replaceStyle(cell(0, 0), null);
+    expect(store.getStyle(0, 0)).toBeNull();
+  });
+
+  it("undoes and redoes as one action", () => {
+    const store = makeStore();
+    store.applyStyle(cell(0, 0), { italic: true });
+    store.replaceStyle(cell(0, 0), { bold: true });
+    store.undo();
+    expect(store.getStyle(0, 0)).toEqual({ italic: true });
+    store.redo();
+    expect(store.getStyle(0, 0)).toEqual({ bold: true });
+  });
+});
+
+describe("format-painter armed state", () => {
+  it("arms with a copy of the source range and reports armed", () => {
+    const store = makeStore();
+    expect(store.isFormatPainterArmed()).toBe(false);
+    store.armFormatPainter(range(0, 0, 1, 1));
+    expect(store.isFormatPainterArmed()).toBe(true);
+    expect(store.getFormatPainterSource()).toEqual(range(0, 0, 1, 1));
+  });
+
+  it("disarms and reports unarmed", () => {
+    const store = makeStore();
+    store.armFormatPainter(cell(0, 0));
+    store.disarmFormatPainter();
+    expect(store.isFormatPainterArmed()).toBe(false);
+    expect(store.getFormatPainterSource()).toBeNull();
+  });
+
+  it("is not undoable and does not push an undo entry", () => {
+    const store = makeStore();
+    store.armFormatPainter(cell(0, 0));
+    store.disarmFormatPainter();
+    expect(store.canUndo()).toBe(false);
   });
 });
